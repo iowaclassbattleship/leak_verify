@@ -77,23 +77,6 @@ func ParseCSV(r io.Reader) (*Table, error) {
 	return t, nil
 }
 
-// Field describes a column that tolerates low-order perturbation.
-type Field struct {
-	Name      string `json:"name"`
-	Decimals  int    `json:"decimals,omitempty"`
-	Timestamp bool   `json:"timestamp,omitempty"`
-	Tolerance string `json:"tolerance"`
-}
-
-// Tolerant lists the only fields the low-order-bit layer may touch. Columns
-// without a stated tolerance (e.g. balance_eur) are never altered.
-var Tolerant = []Field{
-	{Name: "opened_at", Timestamp: true, Tolerance: "1 ms"},
-	{Name: "latitude", Decimals: 6, Tolerance: "0.000001 deg (about 11 cm)"},
-	{Name: "longitude", Decimals: 6, Tolerance: "0.000001 deg (about 8 cm)"},
-	{Name: "risk_score", Decimals: 4, Tolerance: "0.0001"},
-}
-
 var Columns = []string{"account_id", "full_name", "email", "city", "opened_at", "balance_eur", "latitude", "longitude", "risk_score"}
 
 const tsLayout = "2006-01-02 15:04:05.000"

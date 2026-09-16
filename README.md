@@ -18,31 +18,37 @@ The frontend is served straight from `web/`, not bundled into the binary: edit a
 go run . -web /path/to/custodial/web
 ```
 
-The two modules are separate frontends served by the same local backend:
+Two applications are served by the same local backend:
 
-| URL | App | Code |
+| URL | Application | Code |
 |---|---|---|
-| `/` | Landing page linking both modules | `web/index.html` |
-| `/dataset/` | Dataset attribution | `web/dataset/` |
-| `/document/` | Document attribution, with **Tag** and **Verify** tabs | `web/document/` |
+| `/` | Landing page | `web/index.html` |
+| `/document/` | **Custodial**, document attribution | `web/document/` |
+| `/provenance/` | **Provenance**, dataset attribution | `web/provenance/` |
 
-`web/shared/` holds the stylesheet and the DOM/API helpers both apps import.
+`web/shared/` holds the stylesheet and the DOM and API helpers both use. Each application has a **Tag** tab (a three-step flow: file, recipients, download) and a **Verify** tab (drop a recovered file, get the recipient). Provenance adds a **Testing** tab with the leak simulator and the robustness matrix.
 
-## Module A: dataset attribution (`internal/tabular`)
+## Provenance: dataset attribution (`internal/tabular`)
+
+Takes any CSV with a header row, or generates sample account data.
+
+**Column roles** are detected and confirmed by the user before marking:
+- **Identifier:** a text or whole-number column whose values are distinct. Marks are keyed to it, and it matches a leaked row back to the source. With none, rows are recognised by the columns marking leaves alone.
+- **Tolerant:** a decimal column with at least three decimals, or a timestamp with fractional seconds. Only these carry low-order-bit marks, per the rule that nothing without a stated tolerance is altered.
 
 | Technique | How it works |
 |---|---|
-| Canary rows | About 0.5% synthetic accounts per recipient, from the same generator as real rows. They are matched by ID, email, or name+city+balance. |
-| Low-order-bit mark | For each tolerant cell, a keyed HMAC of the primary key decides whether the cell carries a bit, which codeword bit it carries, and a mask. The value's last-digit parity holds the bit. Only fields with a declared tolerance are touched: `opened_at` ms, lat/lon at 1e-6, `risk_score` at 1e-4. |
-| Dummy column | `branch_ref` = `BR-<id XOR keyed pad>-<check>`. Easy to drop, and included only as the weakest layer. |
+| Canary rows | About 0.5% synthetic rows per recipient, built from a real row with fresh identifying values so each column stays plausible. |
+| Low-order-bit mark | For each tolerant cell, a keyed HMAC of the row's identifying value decides whether the cell carries a bit, which codeword bit, and its mask. The value's last digit holds the bit. |
+| Dummy column | `ref_code` = `BR-<id XOR keyed pad>-<check>`. Easy to drop, and included only as the weakest layer. |
 
 Detection runs in two stages:
-- **Exact matching:** SHA-256 row fingerprints compared against each recipient's regenerated copy.
-- **Fuzzy matching:** majority vote per codeword bit, then ECC decoding.
+- **Exact matching:** SHA-256 row fingerprints compared against each recipient's regenerated copy, plus canary lookup.
+- **Fuzzy matching:** majority vote per codeword bit, then ECC decoding, plus the dummy column.
 
-If `account_id` is dropped, rows are re-identified against the source by email or name+city.
+If the identifying column is dropped, rows are matched back by another unique column, or by the columns marking never alters.
 
-## Module B: document attribution (`internal/document`)
+## Custodial: document attribution (`internal/document`)
 
 The uploaded PDF's text is extracted and re-typeset into a PDF with an embedded font. The demo writes and parses its own PDFs.
 

@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Provenance</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Cpath d=%27M2 12h3V6H2zm4.5 0h3V2h-3zM11 12h3V8h-3z%27 fill=%27%232d5bd7%27/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="../shared/style.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="../">
+    <span>
+      <strong>Provenance</strong>
+      <small>Dataset attribution</small>
+    </span>
+  </a>
+  <nav class="tabs" role="tablist">
+    <a href="#tag" role="tab" data-tab="tag">Tag</a>
+    <a href="#verify" role="tab" data-tab="verify">Verify</a>
+    <a href="#testing" role="tab" data-tab="testing">Testing</a>
+  </nav>
+</header>
+
+<main>
+  <!-- ================================ TAG ================================ -->
+  <section id="tag" class="module" hidden>
+    <div class="wizard">
+      <ol class="stepper" id="tab-stepper">
+        <li><button type="button" data-step="1"><span class="dot">1</span><span class="label"><b>Data</b><small>Upload and confirm columns</small></span></button></li>
+        <li><button type="button" data-step="2"><span class="dot">2</span><span class="label"><b>Recipients</b><small>Choose who gets it</small></span></button></li>
+        <li><button type="button" data-step="3"><span class="dot">3</span><span class="label"><b>Share</b><small>Download tagged copies</small></span></button></li>
+      </ol>
+
+      <div class="wizard-card">
+        <!-- Step 1 -->
+        <div class="wstep" id="tab-step-1">
+          <h2>Choose a table</h2>
+
+          <div id="tab-upload">
+            <label id="tab-drop" class="dropzone" tabindex="0">
+              <input id="tab-file" type="file" accept=".csv,text/csv">
+              <span class="drop-icon" aria-hidden="true">⇪</span>
+              <b id="tab-drop-title">Drop your CSV here</b>
+              <span class="muted" id="tab-drop-hint">CSV with a header row, up to 25 MB</span>
+            </label>
+            <p class="center small"><button type="button" class="linklike" id="tab-sample">Use sample account data</button></p>
+          </div>
+
+          <div id="tab-data" hidden>
+            <div class="doc-card">
+              <div class="doc-icon csv" aria-hidden="true">CSV</div>
+              <div class="doc-body">
+                <b id="tab-data-title"></b>
+                <span class="muted small" id="tab-data-meta"></span>
+              </div>
+              <div class="doc-actions">
+                <a class="button link" href="/api/tab/source.csv">Download</a>
+                <button type="button" class="secondary" id="tab-replace">Replace</button>
+              </div>
+            </div>
+
+            <h3>Column roles</h3>
+            <p class="muted small">Detected from the data. Identifiers let a leaked row be matched back to the source. Tolerant columns carry the mark in their last digit, so only choose columns where a change that small does not matter.</p>
+            <div id="tab-roles" class="table-wrap"></div>
+            <p id="tab-roles-note" class="notes" hidden></p>
+          </div>
+
+          <div class="wizard-foot">
+            <span></span>
+            <button type="button" id="tab-next-1" disabled>Continue</button>
+          </div>
+        </div>
+
+        <!-- Step 2 -->
+        <div class="wstep" id="tab-step-2" hidden>
+          <h2>Recipients</h2>
+          <div class="recip-toolbar">
+            <span class="muted small">Each recipient receives a separately marked copy.</span>
+            <span id="tab-count" class="muted small"></span>
+          </div>
+          <div id="tab-recipients" class="recip-list"></div>
+          <p id="tab-recipients-empty" class="muted center small">No recipients yet. Add one below, or <button type="button" class="linklike" id="tab-examples">add examples</button>.</p>
+
+          <form id="tab-add" class="recip-add">
+            <input name="name" placeholder="Name" required>
+            <input name="org" placeholder="Purpose, for example analytics vendor">
+            <button type="submit" class="secondary">Add</button>
+          </form>
+
+          <details class="settings">
+            <summary>Marking techniques <span id="tab-tech-summary" class="muted small"></span></summary>
+            <div id="tab-techniques" class="checks col">
+              <label><input type="checkbox" name="canary" checked> <b>Canary rows</b><small class="muted">Synthetic rows added to each copy. Survive rounding and dropped columns, but a small sample may contain none.</small></label>
+              <label><input type="checkbox" name="lowBit" checked> <b>Low-order bits</b><small class="muted">The last digit of tolerant columns, spread with an error-correcting code. Survives sampling; destroyed by rounding.</small></label>
+              <label><input type="checkbox" name="dummy" checked> <b>Dummy column</b> <span class="warn-inline">weak</span><small class="muted">An extra column that looks like a reference code. Easy to drop and visible when two copies are compared.</small></label>
+            </div>
+          </details>
+
+          <div class="wizard-foot">
+            <button type="button" class="secondary" id="tab-back-2">Back</button>
+            <button type="button" id="tab-create" disabled>Create copies</button>
+          </div>
+        </div>
+
+        <!-- Step 3 -->
+        <div class="wstep" id="tab-step-3" hidden>
+          <div class="success-head">
+            <span class="success-mark" aria-hidden="true">✓</span>
+            <div>
+              <h2 id="tab-ready-title">Copies ready</h2>
+              <p class="muted">Send each file only to its named recipient.</p>
+            </div>
+          </div>
+          <div id="tab-copies" class="copy-list"></div>
+          <div class="wizard-foot">
+            <button type="button" class="secondary" id="tab-back-3">Back</button>
+            <a id="tab-zip" class="button" href="#">Download all (.zip)</a>
+          </div>
+          <p class="center small muted"><button type="button" class="linklike" id="tab-restart">Share another table</button></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- =============================== VERIFY =============================== -->
+  <section id="verify" class="module" hidden>
+    <div class="intro">
+      <h1>Verify a file</h1>
+      <p>Check a recovered CSV against the issuance log.</p>
+    </div>
+
+    <div id="verify-context" class="context"></div>
+
+    <label id="verify-drop" class="dropzone" tabindex="0">
+      <input id="verify-input" type="file" multiple accept=".csv,text/csv">
+      <span class="drop-icon" aria-hidden="true">⇩</span>
+      <b>Drop files here</b>
+      <span class="muted">CSV, up to 25 MB</span>
+    </label>
+
+    <div id="verify-results" class="verify-results"></div>
+  </section>
+
+  <!-- =============================== TESTING ============================== -->
+  <section id="testing" class="module" hidden>
+    <div class="intro">
+      <h1>Testing</h1>
+      <p>Transform an issued copy the way a leaker might, and see which techniques still identify the recipient.</p>
+    </div>
+
+    <article class="step">
+      <header><span class="num">1</span><h2>Simulate a leak</h2></header>
+      <div class="row wrap gap">
+        <label>Copy <select id="test-source"></select></label>
+      </div>
+      <div class="attack-grid">
+        <div class="attack-box">
+          <h4>Drop columns</h4>
+          <div id="test-drop" class="checks col"></div>
+        </div>
+        <div class="attack-box">
+          <h4>Keep rows</h4>
+          <label class="range"><input id="test-sample" type="range" min="1" max="100" value="100"><output id="test-sample-out">100%</output></label>
+          <label><input id="test-shuffle" type="checkbox"> Shuffle row order</label>
+        </div>
+        <div class="attack-box">
+          <h4>Round values</h4>
+          <label>Remove decimals
+            <select id="test-round"><option value="0">none</option><option>1</option><option selected>2</option><option>3</option></select></label>
+          <label><input id="test-trunc" type="checkbox"> Truncate timestamps</label>
+        </div>
+      </div>
+      <div class="row gap">
+        <button id="test-run">Run detector</button>
+        <span id="test-desc" class="muted small"></span>
+      </div>
+      <div id="test-result" hidden>
+        <h3>Recovered file <a id="test-download" class="small" href="#">download CSV</a></h3>
+        <div id="test-preview" class="table-wrap"></div>
+        <div id="test-report" class="report"></div>
+      </div>
+    </article>
+
+    <article class="step">
+      <header><span class="num">2</span><h2>Robustness matrix</h2></header>
+      <div class="row wrap gap">
+        <label>Copy <select id="test-matrix-source"></select></label>
+        <button id="test-matrix" class="secondary">Run all attacks</button>
+      </div>
+      <div id="test-matrix-out"></div>
+    </article>
+
+    <details class="limits">
+      <summary>Limitations</summary>
+      <ul>
+        <li>Marked cells are located by a keyed hash of the identifying column. If no identifying column survives, rows are matched back by another unique column or by the columns marking leaves alone.</li>
+        <li>Rounding below the marked digit destroys that layer. It only uses precision the data owner declared as noise.</li>
+        <li>Canary rows identify a recipient only if a sampled leak happens to contain one.</li>
+        <li>Canary rows are assembled from real rows with fresh identifying values, so they are plausible column by column but may combine attributes that rarely occur together.</li>
+        <li>Merged copies from several recipients are flagged, but not resolved.</li>
+      </ul>
+    </details>
+  </section>
+</main>
+
+<div id="toast" class="toast" hidden></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>

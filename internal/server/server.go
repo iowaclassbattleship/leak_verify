@@ -11,9 +11,11 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"custodial/internal/codec"
 	"custodial/internal/document"
+	"custodial/internal/tabular"
 )
 
 const maxUpload = 25 << 20
@@ -29,7 +31,7 @@ type Server struct {
 func New() *Server {
 	key := codec.NewKey()
 	s := &Server{key: key, engine: document.NewEngine(key)}
-	s.resetTabular(2000)
+	s.resetTabular(tabular.Generate(2000, uint64(time.Now().UnixNano())), sampleTableSource, "accounts")
 	s.resetDocument(s.engine.NewMaster(document.SampleDoc(), sampleSource), "Project-Halcyon-Board-Briefing")
 	return s
 }
@@ -40,13 +42,15 @@ func (s *Server) Handler(web fs.FS) http.Handler {
 	mux.Handle("GET /", noCache(http.FileServerFS(web)))
 
 	mux.HandleFunc("GET /api/tab/state", s.tabStateHandler)
-	mux.HandleFunc("POST /api/tab/dataset", s.tabDataset)
+	mux.HandleFunc("POST /api/tab/source", s.tabSource)
+	mux.HandleFunc("POST /api/tab/schema", s.tabSchema)
 	mux.HandleFunc("GET /api/tab/source.csv", s.tabSourceCSV)
 	mux.HandleFunc("POST /api/tab/issue", s.tabIssue)
 	mux.HandleFunc("GET /api/tab/copy", s.tabCopy)
+	mux.HandleFunc("GET /api/tab/bundle", s.tabBundle)
+	mux.HandleFunc("POST /api/tab/detect", s.tabDetect)
 	mux.HandleFunc("POST /api/tab/leak", s.tabLeak)
 	mux.HandleFunc("GET /api/tab/leak", s.tabLeakCSV)
-	mux.HandleFunc("POST /api/tab/detect", s.tabDetect)
 	mux.HandleFunc("POST /api/tab/matrix", s.tabMatrix)
 
 	mux.HandleFunc("GET /api/doc/state", s.docStateHandler)

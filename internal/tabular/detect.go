@@ -34,6 +34,7 @@ type Report struct {
 type Registry struct {
 	Key    codec.Key
 	Master *Table
+	Schema Schema
 	Issued []*Issuance
 	Copies map[uint16]*Table
 }
@@ -41,6 +42,9 @@ type Registry struct {
 func (r *Registry) label(id uint16) string {
 	for _, is := range r.Issued {
 		if is.MarkID == id {
+			if is.Org == "" {
+				return is.Recipient
+			}
 			return is.Recipient + " (" + is.Org + ")"
 		}
 	}
@@ -109,38 +113,110 @@ func verdict(results []Result) Result {
 	return v
 }
 
-// resolveKeys maps each leaked row back to a source primary key, using
-// account_id if present, else re-identifying the row against the master by
-// email or by (full_name, city).
+// resolveKeys maps each leaked row back to the value its marks were derived
+// from: the identifying column if it survived, otherwise another unique column
+// or the columns that marking never alters.
 func (r *Registry) resolveKeys(leaked *Table) []string {
-	m := r.Master
-	mPK, mEmail, mName, mCity := m.Col("account_id"), m.Col("email"), m.Col("full_name"), m.Col("city")
-	ids := map[string]bool{}
-	byEmail := map[string]string{}
-	byNameCity := map[string]string{}
-	for _, row := range m.Rows {
-		ids[row[mPK]] = true
-		byEmail[strings.ToLower(row[mEmail])] = row[mPK]
-		k := row[mName] + "|" + row[mCity]
-		if _, dup := byNameCity[k]; dup {
-			byNameCity[k] = "" // ambiguous
-		} else {
-			byNameCity[k] = row[mPK]
+	m, sc := r.Master, r.Schema
+	out := make([]string, len(leaked.Rows))
+
+	// With no identifying column the key is derived from the row itself, so no
+	// lookup against the source is needed: it works as long as the columns
+	// marking leaves alone are still present.
+	if sc.Key == "" {
+		ok := true
+		for _, name := range sc.stable(m) {
+			if leaked.Col(name) < 0 {
+				ok = false
+			}
+		}
+		if ok {
+			for i, row := range leaked.Rows {
+				out[i] = sc.rowKey(leaked, row)
+			}
+			return out
 		}
 	}
-	lPK, lEmail, lName, lCity := leaked.Col("account_id"), leaked.Col("email"), leaked.Col("full_name"), leaked.Col("city")
-	out := make([]string, len(leaked.Rows))
+	keyOf := make([]string, len(m.Rows))
+	for i, row := range m.Rows {
+		keyOf[i] = sc.rowKey(m, row)
+	}
+
+	// Direct: the identifying column is still present.
+	if c := leaked.Col(sc.Key); sc.Key != "" && c >= 0 {
+		known := map[string]bool{}
+		for _, k := range keyOf {
+			known[k] = true
+		}
+		for i, row := range leaked.Rows {
+			if known[row[c]] {
+				out[i] = row[c]
+			}
+		}
+	}
+
+	// Fallback: another unique column, then the stable columns as a whole.
+	lookups := make([]map[string]string, 0, len(sc.Match)+1)
+	cols := make([][2]int, 0, len(sc.Match)+1) // master column, leaked column
+	for _, name := range sc.Match {
+		mc, lc := m.Col(name), leaked.Col(name)
+		if mc >= 0 && lc >= 0 {
+			cols = append(cols, [2]int{mc, lc})
+			lookups = append(lookups, map[string]string{})
+		}
+	}
+	var stable []string
+	for _, name := range sc.stable(m) {
+		if leaked.Col(name) >= 0 {
+			stable = append(stable, name)
+		}
+	}
+	var stableLookup map[string]string
+	if len(stable) > 0 {
+		stableLookup = map[string]string{}
+	}
+	for i, row := range m.Rows {
+		for j, cc := range cols {
+			v := row[cc[0]]
+			if _, dup := lookups[j][v]; dup {
+				lookups[j][v] = "" // ambiguous
+			} else {
+				lookups[j][v] = keyOf[i]
+			}
+		}
+		if stableLookup != nil {
+			h := project(row, m, stable)
+			if _, dup := stableLookup[h]; dup {
+				stableLookup[h] = ""
+			} else {
+				stableLookup[h] = keyOf[i]
+			}
+		}
+	}
 	for i, row := range leaked.Rows {
-		switch {
-		case lPK >= 0 && ids[row[lPK]]:
-			out[i] = row[lPK]
-		case lEmail >= 0 && byEmail[strings.ToLower(row[lEmail])] != "":
-			out[i] = byEmail[strings.ToLower(row[lEmail])]
-		case lName >= 0 && lCity >= 0:
-			out[i] = byNameCity[row[lName]+"|"+row[lCity]]
+		if out[i] != "" {
+			continue
+		}
+		for j, cc := range cols {
+			if k := lookups[j][row[cc[1]]]; k != "" {
+				out[i] = k
+				break
+			}
+		}
+		if out[i] == "" && stableLookup != nil {
+			out[i] = stableLookup[project(row, leaked, stable)]
 		}
 	}
 	return out
+}
+
+// project joins the named columns of a row into a comparable string.
+func project(row []string, t *Table, names []string) string {
+	parts := make([]string, len(names))
+	for i, n := range names {
+		parts[i] = row[t.Col(n)]
+	}
+	return strings.Join(parts, "\x00")
 }
 
 // plural renders a count with the matching noun.
@@ -235,12 +311,39 @@ func (r *Registry) detectExact(leaked *Table) Result {
 
 func (r *Registry) detectCanaries(leaked *Table) Result {
 	res := Result{Technique: "canary", Name: "Canary rows", Stage: "Exact matching"}
+	sc := r.Master
+	// Identify canaries by any column that identifies a row, and by the whole
+	// set of columns marking leaves alone.
+	var probes []string
+	for _, name := range r.Schema.identifying(r.Master) {
+		if leaked.Col(name) >= 0 {
+			probes = append(probes, name)
+		}
+	}
+	var stable []string
+	for _, name := range r.Schema.stable(r.Master) {
+		if leaked.Col(name) >= 0 {
+			stable = append(stable, name)
+		}
+	}
 	type ref struct {
 		id    uint16
 		index int
 	}
 	byKey := map[string]ref{}
 	ambiguous := map[string]bool{}
+	add := func(k string, rf ref) {
+		if prev, dup := byKey[k]; dup && prev.id != rf.id {
+			ambiguous[k] = true
+		}
+		byKey[k] = rf
+	}
+	realRows := map[string]bool{}
+	if len(stable) > 0 {
+		for _, row := range sc.Rows {
+			realRows[project(row, sc, stable)] = true
+		}
+	}
 	total := 0
 	for _, is := range r.Issued {
 		if !is.Techniques.Canary {
@@ -248,12 +351,12 @@ func (r *Registry) detectCanaries(leaked *Table) Result {
 		}
 		for i, c := range is.Canaries {
 			total++
-			ref := ref{is.MarkID, i}
-			for _, k := range []string{"id:" + c.AccountID, "em:" + strings.ToLower(c.Email), "nc:" + c.Name + "|" + c.City + "|" + c.Balance} {
-				if prev, dup := byKey[k]; dup && prev.id != ref.id {
-					ambiguous[k] = true // two recipients drew the same synthetic identity
-				}
-				byKey[k] = ref
+			rf := ref{is.MarkID, i}
+			for _, name := range probes {
+				add(name+"="+c.Row[sc.Col(name)], rf)
+			}
+			if h := project(c.Row, sc, stable); len(stable) > 0 && !realRows[h] {
+				add("row="+h, rf)
 			}
 		}
 	}
@@ -265,25 +368,26 @@ func (r *Registry) detectCanaries(leaked *Table) Result {
 		res.Detail = "No recipient was issued canary rows."
 		return res
 	}
-	lPK, lEmail, lName, lCity, lBal := leaked.Col("account_id"), leaked.Col("email"), leaked.Col("full_name"), leaked.Col("city"), leaked.Col("balance_eur")
+	if len(probes) == 0 && len(stable) == 0 {
+		res.Status = "absent"
+		res.Detail = "No columns are left to recognise canary rows."
+		return res
+	}
 	found := map[uint16]map[int]bool{}
 	for _, row := range leaked.Rows {
 		var keys []string
-		if lPK >= 0 {
-			keys = append(keys, "id:"+row[lPK])
+		for _, name := range probes {
+			keys = append(keys, name+"="+row[leaked.Col(name)])
 		}
-		if lEmail >= 0 {
-			keys = append(keys, "em:"+strings.ToLower(row[lEmail]))
-		}
-		if lName >= 0 && lCity >= 0 && lBal >= 0 {
-			keys = append(keys, "nc:"+row[lName]+"|"+row[lCity]+"|"+row[lBal])
+		if len(stable) > 0 {
+			keys = append(keys, "row="+project(row, leaked, stable))
 		}
 		for _, k := range keys {
-			if ref, ok := byKey[k]; ok {
-				if found[ref.id] == nil {
-					found[ref.id] = map[int]bool{}
+			if rf, ok := byKey[k]; ok {
+				if found[rf.id] == nil {
+					found[rf.id] = map[int]bool{}
 				}
-				found[ref.id][ref.index] = true
+				found[rf.id][rf.index] = true
 				break
 			}
 		}
@@ -292,9 +396,6 @@ func (r *Registry) detectCanaries(leaked *Table) Result {
 	case 0:
 		res.Status = "absent"
 		res.Detail = fmt.Sprintf("None of the %d issued canary rows appear in these %d rows.", total, len(leaked.Rows))
-		if lPK < 0 && lEmail < 0 && (lName < 0 || lCity < 0 || lBal < 0) {
-			res.Detail = "No identifying columns are left to recognise canary rows."
-		}
 	case 1:
 		for id, hits := range found {
 			per := 0
@@ -325,7 +426,7 @@ func (r *Registry) candidates(pred func(*Issuance) bool) []codec.Candidate {
 	var c []codec.Candidate
 	for _, is := range r.Issued {
 		if pred(is) {
-			c = append(c, codec.Candidate{ID: is.MarkID, Label: is.Recipient + " (" + is.Org + ")"})
+			c = append(c, codec.Candidate{ID: is.MarkID, Label: r.label(is.MarkID)})
 		}
 	}
 	return c
@@ -337,7 +438,7 @@ func (r *Registry) detectLowBit(leaked *Table, pks []string) Result {
 	res := Result{Technique: "lowbit", Name: "Low-order-bit mark", Stage: "Fuzzy matching"}
 	var votes codec.Votes
 	present, cells, lostPrecision := 0, 0, 0
-	for _, f := range Tolerant {
+	for _, f := range r.Schema.Tolerant {
 		c := leaked.Col(f.Name)
 		if c < 0 {
 			continue
@@ -390,10 +491,10 @@ func (r *Registry) detectLowBit(leaked *Table, pks []string) Result {
 
 func (r *Registry) detectDummy(leaked *Table, pks []string) Result {
 	res := Result{Technique: "dummy", Name: "Dummy column", Stage: "Fuzzy matching"}
-	c := leaked.Col(DummyColumn)
-	if c < 0 {
+	c := leaked.Col(r.Schema.Dummy)
+	if r.Schema.Dummy == "" || c < 0 {
 		res.Status = "absent"
-		res.Detail = "Column " + DummyColumn + " is not present."
+		res.Detail = "The dummy column is not present."
 		return res
 	}
 	counts := map[uint16]int{}
@@ -417,7 +518,7 @@ func (r *Registry) detectDummy(leaked *Table, pks []string) Result {
 	}
 	if valid == 0 {
 		res.Status = "absent"
-		res.Detail = fmt.Sprintf("Column %s is present, but no value verifies against the key across %d matched rows.", DummyColumn, readable)
+		res.Detail = fmt.Sprintf("Column %s is present, but no value verifies against the key across %d matched rows.", r.Schema.Dummy, readable)
 		return res
 	}
 	res.Detail = fmt.Sprintf("%d of %d matched rows carry a valid code, %d of them decode to %s.", valid, readable, bestN, codec.FormatID(best))

@@ -299,3 +299,5 @@ a.brand { color: inherit; text-decoration: none; }
 .copy .fname { font-size: 13px; }
 .button.secondary-btn { background: #fff; color: var(--accent); }
 .button[hidden] { display: none; }
+.doc-icon.csv { background: #e3f5ec; color: var(--ok); border-color: #b7e3cb; }
+.recip .linklike { font-size: 12px; }

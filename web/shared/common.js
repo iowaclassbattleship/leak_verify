@@ -200,3 +200,43 @@ export function setupDropzone(zone, input, onFiles, area = zone) {
     window.addEventListener('drop', (e) => e.preventDefault());
   }
 }
+
+const HEADLINE = {
+  attributed: 'Tagged',
+  inconclusive: 'Possible tag',
+  absent: 'No tag found',
+};
+
+export function verifyCard(card, name, size, rep) {
+  const v = rep.verdict;
+  const status = v.status === 'attributed' ? 'attributed' : v.status === 'inconclusive' ? 'inconclusive' : 'absent';
+  card.className = 'verify-card ' + status;
+
+  const surviving = rep.results.filter((r) => r.status === 'attributed');
+  let summary;
+  if (status === 'attributed') {
+    summary = el('div', {},
+      el('div', { class: 'who' }, 'Issued to ', el('b', { text: v.recipient }), ' ', el('span', { class: 'mono', text: v.markId })),
+      el('div', { class: 'muted small', text: [v.confidence, surviving.length ? 'Read from ' + surviving.map((r) => r.name).join(', ') : ''].filter(Boolean).join('. ') }));
+  } else if (status === 'inconclusive') {
+    summary = el('div', { class: 'muted', text: 'Signal found, but not enough to name a recipient.' });
+  } else {
+    summary = el('div', { class: 'muted', text: 'No tag survives in this file. Either it was not issued here, or every layer was destroyed.' });
+  }
+
+  card.replaceChildren(
+    el('div', { class: 'vc-head' },
+      el('b', { text: name }),
+      el('span', { class: 'muted small', text: [rep.input, size, new Date().toLocaleTimeString()].filter(Boolean).join(' · ') })),
+    el('div', { class: 'vc-status' }, el('span', { class: 'big', text: HEADLINE[status] }), summary),
+    el('div', { class: 'layer-chips' }, rep.results.map((r) => el('span', { class: 'chip', title: r.detail }, pill(r.status), ' ', r.name))),
+    el('details', {},
+      el('summary', { text: 'Layer detail' }),
+      renderCards(el('div'), rep.results, null)));
+}
+
+export function fmtSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
