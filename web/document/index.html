@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Custodial</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Cpath d=%27M8 1l7 7-7 7-7-7z%27 fill=%27%232d5bd7%27/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="../shared/style.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="../">
+    <span>
+      <strong>Custodial</strong>
+    </span>
+  </a>
+  <nav class="tabs" role="tablist">
+    <a href="#tag" role="tab" data-tab="tag">Tag</a>
+    <a href="#verify" role="tab" data-tab="verify">Verify</a>
+  </nav>
+</header>
+
+<main>
+  <!-- ================================ TAG ================================ -->
+  <section id="tag" class="module" hidden>
+    <div class="wizard">
+
+      <ol class="stepper" id="tag-stepper">
+        <li><button type="button" data-step="1"><span class="dot">1</span><span class="label"><b>Document</b><small>Upload the file</small></span></button></li>
+        <li><button type="button" data-step="2"><span class="dot">2</span><span class="label"><b>Recipients</b><small>Choose who gets it</small></span></button></li>
+        <li><button type="button" data-step="3"><span class="dot">3</span><span class="label"><b>Share</b><small>Download tagged copies</small></span></button></li>
+      </ol>
+
+      <div class="wizard-card">
+        <!-- Step 1 -->
+        <div class="wstep" id="tag-step-1">
+          <h2>Choose a document</h2>
+          <div id="tag-upload">
+            <label id="tag-drop" class="dropzone" tabindex="0">
+              <input id="tag-file" type="file" accept=".pdf,.txt,application/pdf,text/plain">
+              <span class="drop-icon" aria-hidden="true">⇪</span>
+              <b id="tag-drop-title">Drop your PDF here</b>
+              <span class="muted" id="tag-drop-hint">PDF or text file, up to 25 MB</span>
+            </label>
+            <p class="center small"><button type="button" class="linklike" id="tag-sample">Use a sample document</button></p>
+          </div>
+
+          <div id="tag-doc" hidden>
+            <div class="doc-card">
+              <div class="doc-icon" aria-hidden="true">PDF</div>
+              <div class="doc-body">
+                <b id="tag-doc-title"></b>
+                <span class="muted small" id="tag-doc-meta"></span>
+              </div>
+              <div class="doc-actions">
+                <a class="button link" href="/api/doc/master.pdf" target="_blank" rel="noopener">Preview</a>
+                <button type="button" class="secondary" id="tag-replace">Replace</button>
+              </div>
+            </div>
+            <ul id="tag-doc-notes" class="notes" hidden></ul>
+          </div>
+
+          <div class="wizard-foot">
+            <span></span>
+            <button type="button" id="tag-next-1" disabled>Continue</button>
+          </div>
+        </div>
+
+        <!-- Step 2 -->
+        <div class="wstep" id="tag-step-2" hidden>
+          <h2>Recipients</h2>
+
+          <div class="recip-toolbar">
+            <label><input type="checkbox" id="tag-all"> Select all</label>
+            <span id="tag-count" class="muted small"></span>
+          </div>
+          <div id="tag-recipients" class="recip-list"></div>
+
+          <form id="tag-add" class="recip-add">
+            <input name="name" placeholder="Name" required>
+            <input name="role" placeholder="Role">
+            <select name="unit" aria-label="Unit"></select>
+            <button type="submit" class="secondary">Add</button>
+          </form>
+
+          <details class="settings">
+            <summary>Protection layers <span id="tag-layer-summary" class="muted small"></span></summary>
+            <div id="doc-layers" class="checks col">
+              <label><input type="checkbox" name="layout" checked> <b>Layout</b><small class="muted">Line positions shifted by <span class="param-shift"></span> pt. Survives print and scan.</small></label>
+              <label><input type="checkbox" name="spectral" checked> <b>Frequency domain</b><small class="muted">Invisible texture behind the page. Survives cropped screenshots.</small></label>
+              <label><input type="checkbox" name="object" checked> <b>Object layer</b><small class="muted">Near-white tint grid. Survives full screenshots.</small></label>
+              <label><input type="checkbox" name="metadata" checked> <b>Metadata</b> <span class="warn-inline">weak</span><small class="muted">Tag in the document properties. Stripped by any re-save.</small></label>
+            </div>
+          </details>
+
+          <div class="wizard-foot">
+            <button type="button" class="secondary" id="tag-back-2">Back</button>
+            <button type="button" id="tag-create" disabled>Create tagged copies</button>
+          </div>
+        </div>
+
+        <!-- Step 3 -->
+        <div class="wstep" id="tag-step-3" hidden>
+          <div class="success-head">
+            <span class="success-mark" aria-hidden="true">✓</span>
+            <div>
+              <h2 id="tag-ready-title">Copies ready</h2>
+              <p class="muted">Send each file only to its named recipient.</p>
+            </div>
+          </div>
+          <div id="tag-copies" class="copy-list"></div>
+          <div class="wizard-foot">
+            <button type="button" class="secondary" id="tag-back-3">Back</button>
+            <a id="tag-zip" class="button" href="#">Download all (.zip)</a>
+          </div>
+          <p class="center small muted"><button type="button" class="linklike" id="tag-restart">Share another document</button></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- =============================== VERIFY =============================== -->
+  <section id="verify" class="module" hidden>
+    <div class="intro">
+      <h1>Verify a file</h1>
+      <p>Check a PDF, screenshot or scan against the issuance log.</p>
+    </div>
+
+    <div id="verify-context" class="context"></div>
+
+    <label id="dropzone" class="dropzone" tabindex="0">
+      <input id="verify-input" type="file" multiple accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg">
+      <span class="drop-icon" aria-hidden="true">⇩</span>
+      <b>Drop files here</b>
+      <span class="muted">PDF, PNG or JPEG, up to 25 MB</span>
+    </label>
+
+    <div id="verify-results" class="verify-results"></div>
+  </section>
+</main>
+
+<div id="toast" class="toast" hidden></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
