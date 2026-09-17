@@ -3,19 +3,15 @@
 package server
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"io"
 	"io/fs"
 	"log"
 	"net/http"
 	"sync"
-	"time"
 
 	"custodial/internal/codec"
 	"custodial/internal/document"
-	"custodial/internal/tabular"
 )
 
 const maxUpload = 25 << 20
@@ -24,14 +20,12 @@ type Server struct {
 	mu     sync.Mutex
 	key    codec.Key
 	engine *document.Engine
-	tab    *tabState
 	doc    *docState
 }
 
 func New() *Server {
 	key := codec.NewKey()
 	s := &Server{key: key, engine: document.NewEngine(key)}
-	s.resetTabular(tabular.Generate(2000, uint64(time.Now().UnixNano())), sampleTableSource, "accounts")
 	s.resetDocument(s.engine.NewMaster(document.SampleDoc(), sampleSource), "Project-Halcyon-Board-Briefing")
 	return s
 }
@@ -41,25 +35,13 @@ func (s *Server) Handler(web fs.FS) http.Handler {
 	// Revalidate on every request so edited frontend files show up on refresh.
 	mux.Handle("GET /", noCache(http.FileServerFS(web)))
 
-	mux.HandleFunc("GET /api/tab/state", s.tabStateHandler)
-	mux.HandleFunc("POST /api/tab/source", s.tabSource)
-	mux.HandleFunc("POST /api/tab/schema", s.tabSchema)
-	mux.HandleFunc("GET /api/tab/source.csv", s.tabSourceCSV)
-	mux.HandleFunc("POST /api/tab/issue", s.tabIssue)
-	mux.HandleFunc("GET /api/tab/copy", s.tabCopy)
-	mux.HandleFunc("GET /api/tab/bundle", s.tabBundle)
-	mux.HandleFunc("POST /api/tab/detect", s.tabDetect)
-	mux.HandleFunc("POST /api/tab/leak", s.tabLeak)
-	mux.HandleFunc("GET /api/tab/leak", s.tabLeakCSV)
-	mux.HandleFunc("POST /api/tab/matrix", s.tabMatrix)
-
-	mux.HandleFunc("GET /api/doc/state", s.docStateHandler)
-	mux.HandleFunc("POST /api/doc/source", s.docSource)
-	mux.HandleFunc("GET /api/doc/master.pdf", s.docMasterPDF)
-	mux.HandleFunc("POST /api/doc/issue", s.docIssue)
-	mux.HandleFunc("GET /api/doc/copy", s.docCopy)
-	mux.HandleFunc("GET /api/doc/bundle", s.docBundle)
-	mux.HandleFunc("POST /api/doc/detect", s.docDetect)
+	mux.HandleFunc("GET /api/state", s.docStateHandler)
+	mux.HandleFunc("POST /api/source", s.docSource)
+	mux.HandleFunc("GET /api/master.pdf", s.docMasterPDF)
+	mux.HandleFunc("POST /api/issue", s.docIssue)
+	mux.HandleFunc("GET /api/copy", s.docCopy)
+	mux.HandleFunc("GET /api/bundle", s.docBundle)
+	mux.HandleFunc("POST /api/detect", s.docDetect)
 	return logRequests(mux)
 }
 
@@ -114,12 +96,6 @@ func readUpload(w http.ResponseWriter, r *http.Request) ([]byte, string, bool) {
 		return nil, "", false
 	}
 	return data, hdr.Filename, true
-}
-
-func newID() string {
-	b := make([]byte, 6)
-	rand.Read(b)
-	return hex.EncodeToString(b)
 }
 
 func sendFile(w http.ResponseWriter, contentType, name string, data []byte, inline bool) {

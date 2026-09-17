@@ -1,13 +1,19 @@
 # Custodial
 
-Two clickable prototypes that run the whole **mark → leak → detect** loop on one host.
-They use a Go backend (standard library plus `golang.org/x/image` for font rasterizing) and a plain HTML/JS frontend with no build step.
-All state is kept in memory, and nothing leaves the machine.
+Document marking and attribution. Every recipient gets an identical-looking copy
+of a Word, PowerPoint, Excel or PDF file, carrying an invisible recipient-unique
+mark, so a leaked copy can be traced back to the person it was issued to.
+
+Runs on one host as a local web app: a Go backend (standard library plus
+`golang.org/x/image` for font rasterizing) and a plain HTML/JS frontend with no
+build step. All state is in memory, and nothing leaves the machine.
+
+The dataset counterpart lives in its own repository, `../provenance`.
 
 ```sh
 go run .                          # http://127.0.0.1:8080
 go run . -addr 127.0.0.1:9000     # other port
-go test ./...                     # robustness tests for both modules
+go test ./...                     # robustness tests
 ```
 
 The marking key is random per process, so restarting the server clears all state.
@@ -18,39 +24,52 @@ The frontend is served straight from `web/`, not bundled into the binary: edit a
 go run . -web /path/to/custodial/web
 ```
 
-Two applications are served by the same local backend:
+## Open XML files: Word, PowerPoint, Excel (`internal/office`)
 
-| URL | Application | Code |
-|---|---|---|
-| `/` | Landing page | `web/index.html` |
-| `/document/` | **Custodial**, document attribution | `web/document/` |
-| `/provenance/` | **Provenance**, dataset attribution | `web/provenance/` |
+An Open XML file is a zip of XML parts, so marking edits those parts and rewrites
+the archive. The readable text is never changed.
 
-`web/shared/` holds the stylesheet and the DOM and API helpers both use. Each application has a **Tag** tab (a three-step flow: file, recipients, download) and a **Verify** tab (drop a recovered file, get the recipient). Provenance adds a **Testing** tab with the leak simulator and the robustness matrix.
+| Carrier | Embedding | Survives | Breaks |
+|---|---|---|---|
+| Background watermark | The same spread-spectrum tile the PDF pipeline uses, 64 pt square, tiled behind the page (Word header shape), the slide master (PowerPoint `blipFill`) or the sheet (Excel sheet background) | editing the text, re-saves, export to PDF, a screenshot of the rendered page | deleting the image from the package, copying the content into a new file |
+| Custom XML part | The identifier in `customXml/item1.xml`, referenced from the main part | editing the text, re-saves | the document inspector, copying the content into a new file |
+| Spacing | Character spacing of 1/20 pt per word (Word), 1/100 pt per word (PowerPoint), or the last digit of row heights and column widths (Excel) | re-saves that keep formatting, the document inspector | retyping the runs, copying the text out, converting the file |
+| Invisible characters | A zero-width character after about one word in eight, on a keyed subset of words | copy and paste into another document | any tool that strips invisible characters |
+| Metadata | A custom document property | a plain forward | the document inspector |
 
-## Provenance: dataset attribution (`internal/tabular`)
+The first two carriers never touch the text or its formatting, so a recipient can
+keep working on the file without disturbing them. That is what makes them the
+default pair: the background watermark carries real bit evidence and reads back
+from a rendering, and the custom XML part carries the identifier through any
+amount of editing.
 
-Takes any CSV with a header row, or generates sample account data.
+Each slot is keyed to a word and the word before it, not to its position, so the
+mark still reads back after text is reordered or partly deleted, and a small
+vocabulary still reaches many of the 32 codeword bits. The app reports how many
+bits each carrier can reach in the loaded file and warns when that is under 32.
 
-**Column roles** are detected and confirmed by the user before marking:
-- **Identifier:** a text or whole-number column whose values are distinct. Marks are keyed to it, and it matches a leaked row back to the source. With none, rows are recognised by the columns marking leaves alone.
-- **Tolerant:** a decimal column with at least three decimals, or a timestamp with fractional seconds. Only these carry low-order-bit marks, per the rule that nothing without a stated tolerance is altered.
+The invisible-character layer is the only one that changes the text bytes, so it
+is **off by default**: switch it on when surviving copy and paste matters more
+than leaving the text untouched. Spacing and metadata never alter the text.
 
-| Technique | How it works |
-|---|---|
-| Canary rows | About 0.5% synthetic rows per recipient, built from a real row with fresh identifying values so each column stays plausible. |
-| Low-order-bit mark | For each tolerant cell, a keyed HMAC of the row's identifying value decides whether the cell carries a bit, which codeword bit, and its mask. The value's last digit holds the bit. |
-| Dummy column | `ref_code` = `BR-<id XOR keyed pad>-<check>`. Easy to drop, and included only as the weakest layer. |
+Attacks simulated in the tests: forward, re-save, edit the document (runs
+retyped, so their formatting is replaced), run the document inspector, strip
+invisible characters, remove the watermark image, and copy-paste the text.
 
-Detection runs in two stages:
-- **Exact matching:** SHA-256 row fingerprints compared against each recipient's regenerated copy, plus canary lookup.
-- **Fuzzy matching:** majority vote per codeword bit, then ECC decoding, plus the dummy column.
+`TestBackgroundSurvivesRendering` runs the rendering path for real where
+LibreOffice and poppler are installed: it marks each fixture, exports it to PDF
+and captures the first page at 96 dpi. All three formats recover all 32 bits
+from both the export and the capture, with no bit errors. The Verify tab
+therefore accepts a PDF export or a screenshot of an Open XML file, not only the
+file itself.
 
-If the identifying column is dropped, rows are matched back by another unique column, or by the columns marking never alters.
+Excel is the weak case. Its spacing carrier reaches only about 9 of 32 bits on a
+small sheet, which the app reports, and a sheet background shows on screen but
+does not print from Excel.
 
-## Custodial: document attribution (`internal/document`)
+## PDFs (`internal/document`)
 
-The uploaded PDF's text is extracted and re-typeset into a PDF with an embedded font. The demo writes and parses its own PDFs.
+A PDF is reduced to its text and re-typeset with an embedded font, so the demo writes and parses its own PDFs. Office files, by contrast, are marked in place.
 
 | Layer | Embedding | Survives | Breaks |
 |---|---|---|---|
@@ -80,13 +99,13 @@ The app has two tabs:
   1. **Document:** drop a PDF or text file, or use the sample.
   2. **Recipients:** pick recipients from the roster or add new ones. Protection layers are under a collapsible panel.
   3. **Share:** download each recipient's tagged PDF, named `<document>_<recipient>.pdf`, or all of them as one zip. Every copy is recorded in the issuance log.
-- **Verify:** drop or choose one or more files (PDF, PNG or JPEG). Each gets a result card: *Tagged* (with recipient and mark ID), *Possible tag*, or *No tag found*, plus per-layer evidence.
+- **Verify:** drop or choose one or more files (the Open XML file, a PDF export or screenshot of it, or PDF, PNG or JPEG for the PDF pipeline). Each gets a result card: *Tagged* (with recipient and mark ID), *Possible tag*, or *No tag found*, plus per-layer evidence.
 
 Verification reads every layer against the current document's issuance log. A file is *Tagged* when a unique recipient matches with chance-match probability ≤ 1e-3. It counts as *No tag found* when the best evidence is at chance level (≥ 5%).
 
 The issuance log applies a privilege hierarchy: a viewer only sees recipients in their own subtree, and only the Security Office sees mark IDs. It is kept by the backend (`GET /api/doc/state?viewer=…`) but no longer has a view in the UI.
 
-## Shared codec (`internal/codec`)
+## Codec (`internal/codec`)
 
 - **Codeword:** each 16-bit mark ID becomes 4 nibbles, each encoded with extended Hamming(8,4). The resulting 32 bits are XORed with a keyed whitening mask.
 - **ID allocation:** new IDs keep a codeword distance of at least 12 from every existing ID.
@@ -98,6 +117,7 @@ The issuance log applies a privilege hierarchy: a viewer only sees recipients in
 - Uploaded PDFs are re-typeset. Production would mark the original content stream in place.
 - Print+scan is simulated. Rotation and photos of screens are not modelled. The layout and tint-grid decoders assume a full upright page; the frequency-domain decoder handles crops and rescaling but not rotation.
 - The frequency-domain watermark is tuned to be invisible on screen, so it does not survive printing. It also lives in a separate background image that editors can delete.
+- The background watermark in an Open XML file was verified against LibreOffice's renderer. Word, PowerPoint and Excel place tiled backgrounds slightly differently, so a production build would verify each one.
 - No layer marks the words themselves, so copy-pasted text carries no tag.
 - Collusion is only flagged when techniques disagree; it is not traced.
 - Covert marking is a technical property. Whether recipients are told is a legal and policy decision.

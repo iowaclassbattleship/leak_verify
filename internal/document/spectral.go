@@ -1,9 +1,12 @@
 package document
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
+	"hash/crc32"
 	"image"
+	"image/png"
 	"math"
 	"math/cmplx"
 	"math/rand/v2"
@@ -530,7 +533,7 @@ func (e *Engine) periodCandidates(R []float32, mask []bool, W, H int) []float64 
 		if float64(min(w, h)) < 2.2*P {
 			break // too few repeats to judge this period
 		}
-		x0, y0 := (W-w)/2, (H-h)/2
+		x0, y0 := clearestWindow(mask, W, H, w, h)
 		sub := make([]float32, w*h)
 		subMask := make([]bool, w*h)
 		for y := 0; y < h; y++ {
@@ -549,6 +552,38 @@ func (e *Engine) periodCandidates(R []float32, mask []bool, W, H int) []float64 
 	return out
 }
 
+// clearestWindow places a w by h window where the least of it is covered by
+// ink. The centre of a page of prose is as good as anywhere, but the centre of
+// a slide is usually where all the content sits.
+func clearestWindow(mask []bool, W, H, w, h int) (int, int) {
+	// Summed-area table of the mask, so any window costs four lookups.
+	sum := make([]int32, (W+1)*(H+1))
+	for y := 0; y < H; y++ {
+		row, prev, out := mask[y*W:(y+1)*W], sum[y*(W+1):], sum[(y+1)*(W+1):]
+		var line int32
+		for x := 0; x < W; x++ {
+			if row[x] {
+				line++
+			}
+			out[x+1] = prev[x+1] + line
+		}
+	}
+	covered := func(x, y int) int32 {
+		return sum[(y+h)*(W+1)+x+w] - sum[y*(W+1)+x+w] - sum[(y+h)*(W+1)+x] + sum[y*(W+1)+x]
+	}
+	bx, by := (W-w)/2, (H-h)/2
+	best := covered(bx, by)
+	for _, fy := range []float64{0, 0.5, 1} {
+		for _, fx := range []float64{0, 0.5, 1} {
+			x, y := int(float64(W-w)*fx), int(float64(H-h)*fy)
+			if c := covered(x, y); c < best {
+				best, bx, by = c, x, y
+			}
+		}
+	}
+	return bx, by
+}
+
 // cropShot simulates a partial screenshot shared through a chat app: page 1
 // at 110 dpi, cropped to a central region, scaled to 75% and JPEG-compressed.
 func cropShot(src *image.Gray) *image.Gray {
@@ -565,4 +600,106 @@ func cropShot(src *image.Gray) *image.Gray {
 		}
 	}
 	return out.toImage()
+}
+
+// ---- watermark for other file formats ----
+
+// WatermarkTilePNG renders the watermark tile as a small greyscale PNG, for
+// embedding as a tiled background in an Open XML file.
+func (e *Engine) WatermarkTilePNG(code codec.Codeword) ([]byte, error) {
+	tile := e.spec.tile(code)
+	img := image.NewGray(image.Rect(0, 0, tile.W, tile.H))
+	copy(img.Pix, tile.Gray)
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return nil, err
+	}
+	return withDensity(buf.Bytes(), SpecTilePx/SpecTilePt*72), nil
+}
+
+// withDensity writes the image's physical resolution into the PNG, so an
+// application that tiles it at natural size lays the tile down at exactly
+// SpecTilePt on the page, the same size the PDF pipeline uses.
+func withDensity(data []byte, dpi float64) []byte {
+	ppm := uint32(dpi/0.0254 + 0.5)
+	body := make([]byte, 0, 9)
+	body = append(body, 'p', 'H', 'Y', 's')
+	body = binary.BigEndian.AppendUint32(body, ppm)
+	body = binary.BigEndian.AppendUint32(body, ppm)
+	body = append(body, 1) // unit: metres
+
+	chunk := binary.BigEndian.AppendUint32(nil, 9)
+	chunk = append(chunk, body...)
+	chunk = binary.BigEndian.AppendUint32(chunk, crc32.ChecksumIEEE(body))
+
+	// The chunk goes straight after IHDR, which is always the first chunk.
+	const at = 8 + 8 + 13 + 4
+	if len(data) < at {
+		return data
+	}
+	out := make([]byte, 0, len(data)+len(chunk))
+	out = append(out, data[:at]...)
+	out = append(out, chunk...)
+	return append(out, data[at:]...)
+}
+
+// ReadWatermarkCapture reads the watermark from a rendering of a marked file:
+// a PDF export, a screenshot or a photo of the screen.
+func (e *Engine) ReadWatermarkCapture(data []byte) (codec.Votes, string, bool) {
+	var v codec.Votes
+	if bytes.HasPrefix(bytes.TrimLeft(data, " \r\n\t"), []byte("%PDF")) {
+		f, err := ParsePDF(data)
+		if err != nil {
+			return v, "the PDF could not be read: " + err.Error(), false
+		}
+		if v, note, ok := e.spectralFromPDF(f); ok {
+			return v, note, ok
+		}
+		return v, "no watermark image among the page images, and a PDF page cannot be searched without rendering it", false
+	}
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return v, "not a readable image", false
+	}
+	return e.spectralFromImage(loadGray(img))
+}
+
+// ReadWatermarkTile reads the watermark from an image that is a whole number
+// of tiles, such as one lifted straight out of a file. Captures of a rendered
+// page go through the image detector instead, which searches for the period.
+func (e *Engine) ReadWatermarkTile(data []byte) (codec.Votes, string, bool) {
+	var v codec.Votes
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return v, "not a readable image", false
+	}
+	g := loadGray(img)
+	if g.W%SpecTilePx != 0 || g.H%SpecTilePx != 0 || g.W == 0 {
+		return v, fmt.Sprintf("image is %dx%d, not a whole number of %d px tiles", g.W, g.H, SpecTilePx), false
+	}
+	grid := make([]float64, SpecTilePx*SpecTilePx)
+	counts := make([]float64, SpecTilePx*SpecTilePx)
+	for y := 0; y < g.H; y++ {
+		for x := 0; x < g.W; x++ {
+			k := (y%SpecTilePx)*SpecTilePx + x%SpecTilePx
+			grid[k] += float64(g.Pix[y*g.W+x])
+			counts[k]++
+		}
+	}
+	mean := 0.0
+	for i := range grid {
+		grid[i] /= counts[i]
+		mean += grid[i]
+	}
+	mean /= float64(len(grid))
+	for i := range grid {
+		grid[i] -= mean
+	}
+	C := e.spec.spectrum(grid, SpecTilePx, 1, 0)
+	sy := e.spec.synchronise(C, true)
+	if sy.z < specZMin {
+		return v, fmt.Sprintf("no watermark pattern in the image (sync correlation %.1f sigma)", sy.z), false
+	}
+	v, amp := e.spec.bits(C, sy)
+	return v, fmt.Sprintf("Watermark image found. Sync correlation %.0f sigma, texture %.1f grey levels.", sy.z, amp), true
 }

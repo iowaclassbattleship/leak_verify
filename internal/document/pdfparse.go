@@ -5,6 +5,8 @@ import (
 	"compress/flate"
 	"compress/zlib"
 	"errors"
+	"image/color"
+	"image/jpeg"
 	"io"
 	"regexp"
 	"sort"
@@ -423,8 +425,11 @@ func decodeStream(dict, raw []byte) []byte {
 	if !bytes.Contains(dict, []byte("/Filter")) {
 		return raw
 	}
+	if bytes.Contains(dict, []byte("/DCTDecode")) && bytes.Count(dict, []byte("Decode")) == 1 {
+		return jpegGray(raw) // an image another application re-encoded
+	}
 	if !bytes.Contains(dict, []byte("/FlateDecode")) || bytes.Count(dict, []byte("Decode")) > 1 {
-		return nil // DCT, LZW, chained filters: not needed for this demo
+		return nil // LZW, chained filters: not needed for this demo
 	}
 	if r, err := zlib.NewReader(bytes.NewReader(raw)); err == nil {
 		if out, err := io.ReadAll(r); err == nil || len(out) > 0 {
@@ -435,6 +440,24 @@ func decodeStream(dict, raw []byte) []byte {
 		return out
 	}
 	return nil
+}
+
+// jpegGray decodes a JPEG image stream to one byte per pixel, so a watermark
+// tile that an application re-encoded can still be read.
+func jpegGray(raw []byte) []byte {
+	img, err := jpeg.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return nil
+	}
+	b := img.Bounds()
+	out := make([]byte, b.Dx()*b.Dy())
+	for y := 0; y < b.Dy(); y++ {
+		for x := 0; x < b.Dx(); x++ {
+			g, _, _, _ := color.GrayModel.Convert(img.At(b.Min.X+x, b.Min.Y+y)).RGBA()
+			out[y*b.Dx()+x] = byte(g >> 8)
+		}
+	}
+	return out
 }
 
 func unescapePDF(s []byte) string {

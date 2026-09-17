@@ -201,8 +201,9 @@ func (e *Engine) pageContents(m *Master, code *codec.Codeword, layers Layers) []
 	return pages
 }
 
-// metaTag is the metadata-layer value: the mark ID plus a keyed check.
-func (e *Engine) metaTag(id uint16) string {
+// MetaTag is the metadata-layer value: the mark ID plus a keyed check. Open
+// XML files carry the same value in a custom document property.
+func (e *Engine) MetaTag(id uint16) string {
 	return fmt.Sprintf("%s.%s", codec.FormatID(id), hex.EncodeToString(e.Key.Sum("meta", strconv.Itoa(int(id)))[:3]))
 }
 
@@ -222,7 +223,7 @@ func (e *Engine) IssueCopy(m *Master, id uint16, layers Layers) []byte {
 	}
 	info := [][2]string{{"Title", m.Title}, {"Producer", "Leak Attribution Demo"}}
 	if layers.Metadata {
-		info = append(info, [2]string{"LAPRef", e.metaTag(id)})
+		info = append(info, [2]string{"LAPRef", e.MetaTag(id)})
 	}
 	return e.Font.WritePDF(e.pageContents(m, &code, layers), images, info, e.Key.Sum("file-id", strconv.Itoa(int(id)))[:16])
 }

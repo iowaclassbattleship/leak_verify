@@ -1,8 +1,8 @@
-import { $, $$, el, api, toast, busy, setupDropzone } from '../shared/common.js';
+import { $, $$, el, api, toast, busy, setupDropzone } from './common.js';
 
 // Three-step share flow: document, recipients, download.
 
-let state = null;  // /api/doc/state
+let state = null;  // /api/state
 let roster = null; // [{name, role, unit, selected}]
 let batch = [];    // copies created in step 2, shown in step 3
 let docReady = false;
@@ -57,12 +57,11 @@ export function initTag() {
 }
 
 async function start() {
-  state = await api('/api/doc/state');
+  state = await api('/api/state');
   roster = state.roster.map((r) => ({ ...r, selected: false }));
   $('#tag-add').unit.replaceChildren(...state.units.filter((u) => u.id !== 'sec').map((u) => el('option', { value: u.id, text: u.name })));
   $('#tag-add').unit.value = 'ext';
-  for (const s of $$('.param-shift')) s.textContent = state.params.shiftPt;
-  renderLayerSummary();
+  renderLayers();
   go(1);
 }
 
@@ -99,9 +98,9 @@ async function loadDocument(file) {
     if (file) {
       const form = new FormData();
       form.append('file', file);
-      state = await api('/api/doc/source', { form });
+      state = await api('/api/source', { form });
     } else {
-      state = await api('/api/doc/source?sample=1', { method: 'POST' });
+      state = await api('/api/source?sample=1', { method: 'POST' });
     }
     docReady = true;
     batch = [];
@@ -112,8 +111,8 @@ async function loadDocument(file) {
     toast(err.message, true);
   } finally {
     zone.classList.remove('busy');
-    $('#tag-drop-title').textContent = 'Drop your PDF here';
-    $('#tag-drop-hint').textContent = 'PDF or text file, up to 25 MB';
+    $('#tag-drop-title').textContent = 'Drop your document here';
+    $('#tag-drop-hint').textContent = 'Word, PowerPoint, Excel or PDF, up to 25 MB';
   }
 }
 
@@ -122,12 +121,26 @@ function renderStep1() {
   $('#tag-doc').hidden = !docReady;
   $('#tag-next-1').disabled = !docReady;
   if (!docReady) return;
-  const m = state.master;
-  $('#tag-doc-title').textContent = m.title;
-  $('#tag-doc-meta').textContent = `${m.pages} page${m.pages === 1 ? '' : 's'} · ${m.words.toLocaleString()} words · ${m.source}`;
-  const notes = m.warnings || [];
+  const d = state.document;
+  $('#tag-doc-icon').textContent = (d.extension || '.pdf').replace('.', '').toUpperCase();
+  $('#tag-doc-title').textContent = d.title;
+  $('#tag-doc-meta').textContent = [d.kindName || 'PDF', ...d.stats.map((x) => `${x.value.toLocaleString()} ${x.label.toLowerCase()}`)].join(' · ');
+  $('#tag-preview').hidden = !d.preview;
+  const notes = d.warnings || [];
   $('#tag-doc-notes').hidden = notes.length === 0;
   $('#tag-doc-notes').replaceChildren(...notes.map((w) => el('li', { text: w })));
+  renderLayers();
+}
+
+// renderLayers draws the marking layers the loaded file supports.
+function renderLayers() {
+  const keep = Object.fromEntries($$('#doc-layers input').map((i) => [i.name, i.checked]));
+  $('#doc-layers').replaceChildren(...(state.layers || []).map((l) => el('label', {},
+    el('input', { type: 'checkbox', name: l.key, checked: keep[l.key] === undefined ? l.default : keep[l.key] }),
+    el('b', { text: l.name }),
+    l.weak ? el('span', { class: 'warn-inline', text: 'weak' }) : null,
+    el('small', { class: 'muted', text: l.description }))));
+  renderLayerSummary();
 }
 
 // ---- Step 2: recipients ----
@@ -162,14 +175,15 @@ function currentLayers() {
 }
 
 function renderLayerSummary() {
-  const on = Object.values(currentLayers()).filter(Boolean).length;
-  $('#tag-layer-summary').textContent = `· ${on} of 4 active`;
+  const layers = currentLayers();
+  const on = Object.values(layers).filter(Boolean).length;
+  $('#tag-layer-summary').textContent = `· ${on} of ${Object.keys(layers).length} active`;
   if (roster) renderRecipients();
 }
 
 async function createCopies() {
   const recipients = roster.filter((r) => r.selected).map(({ name, role, unit }) => ({ name, role, unit }));
-  batch = await api('/api/doc/issue', { json: { recipients, layers: currentLayers() } });
+  batch = await api('/api/issue', { json: { recipients, layers: currentLayers() } });
   reached = 3;
   go(3);
 }
@@ -187,7 +201,7 @@ function renderCopies() {
     el('span', { class: 'copy-file' },
       el('span', { class: 'fname', text: c.fileName }),
       el('small', { class: 'muted' }, `${Math.round(c.sizeBytes / 1024)} KB, tag `, el('span', { class: 'mono', text: c.markId }))),
-    el('a', { class: 'button secondary-btn', href: `/api/doc/copy?mark=${c.markId}&download=1`, download: c.fileName, text: 'Download' }))));
-  $('#tag-zip').href = `/api/doc/bundle?marks=${batch.map((c) => c.markId).join(',')}`;
+    el('a', { class: 'button secondary-btn', href: `/api/copy?mark=${c.markId}&download=1`, download: c.fileName, text: 'Download' }))));
+  $('#tag-zip').href = `/api/bundle?marks=${batch.map((c) => c.markId).join(',')}`;
   $('#tag-zip').hidden = n < 2;
 }

@@ -1,5 +1,5 @@
-// Command custodial runs the leak attribution demonstrator: a local web
-// server with a dataset attribution module and a document attribution module.
+// Command custodial runs the document attribution demonstrator: a local web
+// server that marks a PDF per recipient and identifies a recovered copy.
 //
 // The frontend is served straight from the web/ directory, so editing an HTML,
 // CSS or JS file only needs a browser refresh, not a restart.
@@ -24,6 +24,6 @@ func main() {
 		log.Fatalf("no frontend at %s (run from the project directory, or pass -web): %v", *webDir, err)
 	}
 	srv := server.New()
-	log.Printf("Leak attribution demo listening on http://%s (serving %s)", *addr, *webDir)
+	log.Printf("Custodial listening on http://%s (serving %s)", *addr, *webDir)
 	log.Fatal(http.ListenAndServe(*addr, srv.Handler(os.DirFS(*webDir))))
 }

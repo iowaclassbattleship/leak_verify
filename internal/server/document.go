@@ -9,9 +9,11 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"custodial/internal/codec"
 	"custodial/internal/document"
+	"custodial/internal/office"
 )
 
 // Unit is a node of the privilege hierarchy. A viewer sees issuance-log
@@ -80,30 +82,82 @@ func inSubtree(unit, root string) bool {
 
 type docIssuance struct {
 	id        uint16
-	pdf       []byte
+	data      []byte
+	tag       string          // metadata value, for Open XML files
 	MarkID    string          `json:"markId"`
 	Name      string          `json:"name"`
 	Role      string          `json:"role"`
 	Unit      string          `json:"unit"`
 	IssuedAt  time.Time       `json:"issuedAt"`
 	IssuedBy  string          `json:"issuedBy"`
-	Layers    document.Layers `json:"layers"`
+	Layers    map[string]bool `json:"layers"`
 	SizeBytes int             `json:"sizeBytes"`
 	FileName  string          `json:"fileName"`
 }
 
 func (d *docIssuance) label() string { return d.Name + " (" + d.Role + ")" }
 
+// docState holds the one document being shared: either a PDF the demo
+// typesets itself, or an Open XML file marked in place.
 type docState struct {
-	master   *document.Master
+	master   *document.Master // PDF pipeline
+	office   *office.File     // Open XML pipeline
+	kind     string           // pdf | docx | pptx | xlsx
+	source   string           // shown in the UI
+	warnings []string
 	fileBase string // download name stem, from the uploaded file name
+	ext      string
+	title    string
 	issued   []*docIssuance
 }
 
 const sampleSource = "Built-in sample briefing"
 
 func (s *Server) resetDocument(m *document.Master, fileBase string) {
-	s.doc = &docState{master: m, fileBase: fileBase}
+	s.doc = &docState{master: m, kind: "pdf", source: m.Source, warnings: m.Warnings, fileBase: fileBase, ext: ".pdf"}
+}
+
+func (s *Server) resetOffice(f *office.File, name, source, fileBase string) {
+	st := &docState{office: f, kind: string(f.Kind), source: source, fileBase: fileBase, ext: "." + string(f.Kind), title: name}
+	stats := f.StatsWithKey(s.key)
+	if stats.SpacingBits < codec.CodeLen {
+		st.warnings = append(st.warnings, fmt.Sprintf("The spacing mark reaches only %d of %d bits in this file, so it can support the other layers but not identify a recipient on its own.", stats.SpacingBits, codec.CodeLen))
+	}
+	if stats.TextBits < codec.CodeLen {
+		st.warnings = append(st.warnings, fmt.Sprintf("The invisible-character mark reaches only %d of %d bits, because the text is short or repetitive.", stats.TextBits, codec.CodeLen))
+	}
+	s.doc = st
+}
+
+// layerSpec describes one marking layer for the UI, per file kind.
+type layerSpec struct {
+	Key         string `json:"key"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Weak        bool   `json:"weak"`
+	Default     bool   `json:"default"`
+}
+
+var pdfLayers = []layerSpec{
+	{"layout", "Layout", "Line positions shifted by 0.45 pt. Survives print and scan.", false, true},
+	{"spectral", "Frequency domain", "Invisible texture behind the page. Survives cropped screenshots.", false, true},
+	{"object", "Object layer", "Near-white tint grid. Survives full screenshots.", false, true},
+	{"metadata", "Metadata", "Tag in the document properties. Stripped by any re-save.", true, true},
+}
+
+var officeLayers = []layerSpec{
+	{"background", "Background watermark", "A frequency-domain texture tiled behind the page, the slide master or the sheet. Changes no text, so editing leaves it in place, and it reads back from a PDF export or a screenshot of the rendered page. In Excel it is a sheet background, which shows on screen but does not print.", false, true},
+	{"customxml", "Custom XML part", "The identifier in a data part of the package. Changes no text and is invisible in the application, so any amount of editing keeps it. Removed by the document inspector.", false, true},
+	{"spacing", "Spacing", "Character spacing of a twentieth of a point per word, or the last digit of row heights in a workbook. Changes no text and survives re-saves that keep formatting, but is lost when runs are retyped.", false, true},
+	{"text", "Invisible characters", "A zero-width character after about one word in eight. The only layer that survives copy and paste, but it does change the text bytes, and some editors show the character.", false, false},
+	{"metadata", "Metadata", "A custom document property. Removed by the document inspector.", true, true},
+}
+
+func (s *Server) layers() []layerSpec {
+	if s.doc.kind == "pdf" {
+		return pdfLayers
+	}
+	return officeLayers
 }
 
 var unsafeFileChars = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
@@ -123,7 +177,21 @@ func fileStem(text string) string {
 func (s *Server) docIssued() []document.Issued {
 	var out []document.Issued
 	for _, is := range s.doc.issued {
-		out = append(out, document.Issued{ID: is.id, Label: is.label(), Layers: is.Layers})
+		out = append(out, document.Issued{ID: is.id, Label: is.label(), Layers: document.Layers{
+			Layout: is.Layers["layout"], Spectral: is.Layers["spectral"],
+			Object: is.Layers["object"], Metadata: is.Layers["metadata"],
+		}})
+	}
+	return out
+}
+
+func (s *Server) officeIssued() []office.Issued {
+	var out []office.Issued
+	for _, is := range s.doc.issued {
+		out = append(out, office.Issued{ID: is.id, Label: is.label(), Tag: is.tag, Layers: office.Layers{
+			Spacing: is.Layers["spacing"], Text: is.Layers["text"], Metadata: is.Layers["metadata"],
+			CustomXML: is.Layers["customxml"], Background: is.Layers["background"],
+		}})
 	}
 	return out
 }
@@ -165,14 +233,14 @@ func (s *Server) docStateHandler(w http.ResponseWriter, r *http.Request) {
 		log = append(log, e)
 	}
 	writeJSON(w, map[string]any{
-		"master":  s.doc.master,
-		"roster":  roster,
-		"units":   units,
-		"viewers": viewers,
-		"viewer":  viewer,
-		"log":     log,
-		"hidden":  hidden,
-		"attacks": document.Attacks,
+		"document": s.documentInfo(),
+		"layers":   s.layers(),
+		"roster":   roster,
+		"units":    units,
+		"viewers":  viewers,
+		"viewer":   viewer,
+		"log":      log,
+		"hidden":   hidden,
 		"marks": func() []map[string]string {
 			var m []map[string]string
 			for _, is := range s.doc.issued {
@@ -180,8 +248,37 @@ func (s *Server) docStateHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			return m
 		}(),
-		"params": map[string]any{"shiftPt": document.ShiftPt, "tintGray": document.TintGray, "cellPt": document.CellPt, "tilePt": document.SpecTilePt},
 	})
+}
+
+// documentInfo summarises the loaded source for the UI.
+func (s *Server) documentInfo() map[string]any {
+	d := s.doc
+	info := map[string]any{
+		"kind": d.kind, "source": d.source, "warnings": d.warnings,
+		"extension": d.ext, "preview": d.kind == "pdf",
+	}
+	switch {
+	case d.master != nil:
+		info["title"] = d.master.Title
+		info["stats"] = []map[string]any{
+			{"label": "Pages", "value": d.master.Pages},
+			{"label": "Words", "value": d.master.Words},
+			{"label": "Lines carrying bits", "value": d.master.BodyLines},
+			{"label": "Tint cells per page", "value": d.master.CellCount},
+		}
+	case d.office != nil:
+		st := d.office.StatsWithKey(s.key)
+		info["title"] = d.title
+		info["kindName"] = d.office.Kind.Name()
+		info["stats"] = []map[string]any{
+			{"label": "Words", "value": st.Words},
+			{"label": "Spacing bits", "value": st.SpacingBits},
+			{"label": "Text bits", "value": st.TextBits},
+			{"label": "Parts", "value": st.Parts},
+		}
+	}
+	return info
 }
 
 func (s *Server) docSource(w http.ResponseWriter, r *http.Request) {
@@ -196,10 +293,28 @@ func (s *Server) docSource(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	base := fileStem(strings.TrimSuffix(filepath.Base(name), filepath.Ext(name)))
+
+	if office.IsOfficeFile(data) {
+		f, err := office.Parse(data)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, fmt.Sprintf("%s: %v", name, err))
+			return
+		}
+		if f.Stats().Words < 20 {
+			writeErr(w, http.StatusBadRequest, "this file holds too little text to carry a mark")
+			return
+		}
+		s.mu.Lock()
+		s.resetOffice(f, name, fmt.Sprintf("%s, %s", name, f.Kind.Name()), base)
+		s.mu.Unlock()
+		s.docStateHandler(w, r)
+		return
+	}
+
 	doc, source, warnings := extractDocument(data, name)
 	m := s.engine.NewMaster(doc, source)
 	m.Warnings = append(warnings, m.Warnings...)
-	base := fileStem(strings.TrimSuffix(filepath.Base(name), filepath.Ext(name)))
 	if source == sampleSource {
 		base = "Project-Halcyon-Board-Briefing"
 	}
@@ -248,6 +363,14 @@ func extractDocument(data []byte, name string) (document.Doc, string, []string) 
 		[]string{"Text is extracted and set again, so tagged copies do not keep the original layout."}
 }
 
+// plural renders a count with the matching noun.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, one)
+	}
+	return fmt.Sprintf("%d %s", n, many)
+}
+
 func (s *Server) docMasterPDF(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	data := s.doc.master.PDF
@@ -258,7 +381,7 @@ func (s *Server) docMasterPDF(w http.ResponseWriter, r *http.Request) {
 func (s *Server) docIssue(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Recipients []rosterEntry   `json:"recipients"`
-		Layers     document.Layers `json:"layers"`
+		Layers     map[string]bool `json:"layers"`
 		IssuedBy   string          `json:"issuedBy"`
 	}
 	if !readJSON(w, r, &req) {
@@ -284,10 +407,35 @@ func (s *Server) docIssue(w http.ResponseWriter, r *http.Request) {
 			ids = append(ids, is.id)
 		}
 		id := s.key.AllocateID(ids)
-		pdf := s.engine.IssueCopy(s.doc.master, id, req.Layers)
-		is := &docIssuance{id: id, pdf: pdf, MarkID: codec.FormatID(id), Name: rc.Name, Role: rc.Role, Unit: rc.Unit,
-			IssuedAt: time.Now(), IssuedBy: req.IssuedBy, Layers: req.Layers, SizeBytes: len(pdf),
-			FileName: s.doc.fileBase + "_" + fileStem(rc.Name) + ".pdf"}
+		is := &docIssuance{id: id, MarkID: codec.FormatID(id), Name: rc.Name, Role: rc.Role, Unit: rc.Unit,
+			IssuedAt: time.Now(), IssuedBy: req.IssuedBy, Layers: req.Layers,
+			FileName: s.doc.fileBase + "_" + fileStem(rc.Name) + s.doc.ext}
+		is.tag = s.engine.MetaTag(id)
+
+		var err error
+		if s.doc.office != nil {
+			var tile []byte
+			if req.Layers["background"] {
+				if tile, err = s.engine.WatermarkTilePNG(s.key.Encode(id)); err != nil {
+					writeErr(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+			}
+			is.data, err = s.doc.office.Mark(s.key, s.key.Encode(id), is.tag, office.Layers{
+				Spacing: req.Layers["spacing"], Text: req.Layers["text"], Metadata: req.Layers["metadata"],
+				CustomXML: req.Layers["customxml"], Background: req.Layers["background"],
+			}, tile)
+		} else {
+			is.data = s.engine.IssueCopy(s.doc.master, id, document.Layers{
+				Layout: req.Layers["layout"], Spectral: req.Layers["spectral"],
+				Object: req.Layers["object"], Metadata: req.Layers["metadata"],
+			})
+		}
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		is.SizeBytes = len(is.data)
 		s.doc.issued = append(s.doc.issued, is)
 		out = append(out, is)
 	}
@@ -302,7 +450,7 @@ func (s *Server) docCopy(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "unknown mark")
 		return
 	}
-	sendFile(w, "application/pdf", is.FileName, is.pdf, r.URL.Query().Get("download") == "")
+	sendFile(w, mimeFor(s.doc.kind), is.FileName, is.data, s.doc.kind == "pdf" && r.URL.Query().Get("download") == "")
 }
 
 // docBundle zips the requested tagged copies for one download.
@@ -331,7 +479,7 @@ func (s *Server) docBundle(w http.ResponseWriter, r *http.Request) {
 		used[is.FileName]++
 		f, err := zw.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Store, Modified: is.IssuedAt})
 		if err == nil {
-			_, err = f.Write(is.pdf)
+			_, err = f.Write(is.data)
 		}
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
@@ -349,10 +497,52 @@ func (s *Server) docDetect(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rep, err := s.engine.Detect(s.doc.master, s.docIssued(), data)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, fmt.Sprintf("%s: %v", name, err))
-		return
+	var payload any
+	switch {
+	case s.doc.office != nil && office.IsOfficeFile(data):
+		rep, err := office.Detect(s.key, data, s.officeIssued(), s.engine.ReadWatermarkTile)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, fmt.Sprintf("%s: %v", name, err))
+			return
+		}
+		payload = rep
+	case s.doc.office != nil && isRendering(data):
+		v, note, ok := s.engine.ReadWatermarkCapture(data)
+		payload = office.DetectCapture(s.key, "Rendering of a page", v, note, ok, s.officeIssued())
+	case s.doc.office != nil:
+		if !utf8.Valid(data) {
+			writeErr(w, http.StatusBadRequest, "expected the file, a rendering of it, or text copied out of it")
+			return
+		}
+		payload = office.DetectText(s.key, string(data), s.officeIssued())
+	default:
+		rep, err := s.engine.Detect(s.doc.master, s.docIssued(), data)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, fmt.Sprintf("%s: %v", name, err))
+			return
+		}
+		payload = rep
 	}
-	writeJSON(w, map[string]any{"name": name, "report": rep})
+	writeJSON(w, map[string]any{"name": name, "report": payload})
+}
+
+// isRendering reports whether the upload is a rendering of a page rather than
+// the file itself: a PDF export, a screenshot or a photo.
+func isRendering(data []byte) bool {
+	return bytes.HasPrefix(bytes.TrimLeft(data, " \r\n\t"), []byte("%PDF")) ||
+		bytes.HasPrefix(data, []byte("\x89PNG")) || bytes.HasPrefix(data, []byte("\xff\xd8"))
+}
+
+var mimeByKind = map[string]string{
+	"pdf":  "application/pdf",
+	"docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	"pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+	"xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+
+func mimeFor(kind string) string {
+	if m := mimeByKind[kind]; m != "" {
+		return m
+	}
+	return "application/octet-stream"
 }

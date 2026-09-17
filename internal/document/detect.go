@@ -139,7 +139,7 @@ func (e *Engine) detectPDF(m *Master, issued []Issued, data []byte) (Report, err
 		meta.Status = "inconclusive"
 		meta.Detail = fmt.Sprintf("Document properties carry the tag %q, but its check value does not verify.", tag)
 		for _, is := range issued {
-			if e.metaTag(is.ID) == tag {
+			if e.MetaTag(is.ID) == tag {
 				meta.Status, meta.MarkID, meta.Recipient = "attributed", codec.FormatID(is.ID), is.Label
 				meta.Confidence = "Check value verifies"
 				meta.Detail = "Valid tag in the document properties. This layer is easily stripped or copied into another file, so it is weak on its own."
