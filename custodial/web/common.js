@@ -17,6 +17,13 @@ export function el(tag, attrs = {}, ...children) {
   return node;
 }
 
+// setText writes to an element that the markup is free to leave out, for
+// captions and hints that carry no state.
+export function setText(sel, text) {
+  const node = $(sel);
+  if (node) node.textContent = text;
+}
+
 export async function api(path, { method = 'GET', json, form } = {}) {
   const opts = { method, headers: {} };
   if (json !== undefined) {

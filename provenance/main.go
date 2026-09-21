@@ -20,10 +20,11 @@ func main() {
 	webDir := flag.String("web", "", "directory holding the frontend files")
 	flag.Parse()
 
+	shared := webapp.SharedDir("common/web", "../common/web")
 	dir, err := webapp.WebDir(*webDir, "provenance/web", "web")
 	if err != nil {
 		log.Fatal(err)
 	}
 	log.Printf("Provenance listening on http://%s (serving %s)", *addr, dir)
-	log.Fatal(http.ListenAndServe(*addr, server.New().Handler(os.DirFS(dir))))
+	log.Fatal(http.ListenAndServe(*addr, server.New().Handler(os.DirFS(dir), shared)))
 }

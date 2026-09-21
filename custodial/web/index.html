@@ -4,16 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Custodial</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Cpath d=%27M8 1l7 7-7 7-7-7z%27 fill=%27%232d5bd7%27/%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 fill=%27%23ffffff%27/%3E%3Cpath d=%27M8 1l7 7-7 7-7-7z%27 fill=%27%23000000%27/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/shared/base.css">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header class="topbar">
-  <span class="brand">
-    <span>
-      <strong>Custodial</strong>
-    </span>
-  </span>
+<header class="top">
+  <div class="brand">
+    <img src="/shared/northward.png" alt="northward">
+    <span class="name">Custodial</span>
+  </div>
   <nav class="tabs" role="tablist">
     <a href="#tag" role="tab" data-tab="tag">Tag</a>
     <a href="#verify" role="tab" data-tab="verify">Verify</a>
@@ -41,7 +41,10 @@
               <input id="tag-file" type="file" accept=".pdf,.docx,.pptx,.xlsx,.txt">
               <span class="drop-icon" aria-hidden="true">⇪</span>
               <b id="tag-drop-title">Drop your document here</b>
-              <span class="muted" id="tag-drop-hint">Word, PowerPoint, Excel or PDF, up to 25 MB</span>
+              <span class="formats" aria-hidden="true">
+                <img src="/shared/word.png" alt=""><img src="/shared/powerpoint.png" alt="">
+                <img src="/shared/excel.png" alt=""><img src="/shared/pdf.png" alt="">
+              </span>
             </label>
             <p class="center small"><button type="button" class="linklike" id="tag-sample">Use a sample document</button></p>
           </div>

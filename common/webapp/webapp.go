@@ -100,6 +100,25 @@ func FileStem(text, fallback string) string {
 	return stem
 }
 
+// Shared mounts the house stylesheet and logo at /shared/, so both
+// applications look like one product without duplicating the files.
+func Shared(mux *http.ServeMux, dir string) {
+	if dir == "" {
+		return
+	}
+	mux.Handle("GET /shared/", NoCache(http.StripPrefix("/shared/", http.FileServer(http.Dir(dir)))))
+}
+
+// SharedDir finds the house stylesheet, wherever the app was started from.
+func SharedDir(candidates ...string) string {
+	for _, dir := range candidates {
+		if _, err := os.Stat(filepath.Join(dir, "base.css")); err == nil {
+			return dir
+		}
+	}
+	return ""
+}
+
 // WebDir returns the first candidate directory that holds an index.html, so
 // each app runs both from the repository root and from its own directory.
 func WebDir(candidates ...string) (string, error) {

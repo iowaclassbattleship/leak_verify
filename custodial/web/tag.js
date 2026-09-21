@@ -1,4 +1,4 @@
-import { $, $$, el, api, toast, busy, setupDropzone } from './common.js';
+import { $, $$, el, api, toast, busy, setupDropzone, setText } from './common.js';
 
 // Three-step share flow: document, recipients, download.
 
@@ -92,8 +92,8 @@ async function loadDocument(file) {
   if (batch.length && !confirm('Replace the current document? Copies already downloaded stay tied to it.')) return;
   const zone = $('#tag-drop');
   zone.classList.add('busy');
-  $('#tag-drop-title').textContent = file ? `Reading ${file.name}` : 'Loading sample';
-  $('#tag-drop-hint').textContent = 'Extracting text and laying out pages';
+  setText('#tag-drop-title', file ? `Reading ${file.name}` : 'Loading sample');
+  setText('#tag-drop-hint', 'Extracting text and laying out pages');
   try {
     if (file) {
       const form = new FormData();
@@ -111,8 +111,8 @@ async function loadDocument(file) {
     toast(err.message, true);
   } finally {
     zone.classList.remove('busy');
-    $('#tag-drop-title').textContent = 'Drop your document here';
-    $('#tag-drop-hint').textContent = 'Word, PowerPoint, Excel or PDF, up to 25 MB';
+    setText('#tag-drop-title', 'Drop your document here');
+    setText('#tag-drop-hint', 'Word, PowerPoint, Excel or PDF, up to 25 MB');
   }
 }
 
@@ -122,7 +122,7 @@ function renderStep1() {
   $('#tag-next-1').disabled = !docReady;
   if (!docReady) return;
   const d = state.document;
-  $('#tag-doc-icon').textContent = (d.extension || '.pdf').replace('.', '').toUpperCase();
+  $('#tag-doc-icon').replaceChildren(fileLogo(d.extension));
   $('#tag-doc-title').textContent = d.title;
   $('#tag-doc-meta').textContent = [d.kindName || 'PDF', ...d.stats.map((x) => `${x.value.toLocaleString()} ${x.label.toLowerCase()}`)].join(' · ');
   $('#tag-preview').hidden = !d.preview;
@@ -132,14 +132,25 @@ function renderStep1() {
   renderLayers();
 }
 
+// fileLogo is the badge for a file type. Anything unrecognised falls back to
+// the extension in text.
+const LOGOS = { docx: 'word', xlsx: 'excel', pptx: 'powerpoint', pdf: 'pdf' };
+
+function fileLogo(extension) {
+  const ext = (extension || '.pdf').replace('.', '').toLowerCase();
+  const logo = LOGOS[ext];
+  return logo
+    ? el('img', { src: `/shared/${logo}.png`, alt: ext.toUpperCase(), title: ext.toUpperCase() })
+    : el('span', { text: ext.toUpperCase() });
+}
+
 // renderLayers draws the marking layers the loaded file supports.
 function renderLayers() {
   const keep = Object.fromEntries($$('#doc-layers input').map((i) => [i.name, i.checked]));
   $('#doc-layers').replaceChildren(...(state.layers || []).map((l) => el('label', {},
     el('input', { type: 'checkbox', name: l.key, checked: keep[l.key] === undefined ? l.default : keep[l.key] }),
     el('b', { text: l.name }),
-    l.weak ? el('span', { class: 'warn-inline', text: 'weak' }) : null,
-    el('small', { class: 'muted', text: l.description }))));
+    l.weak ? el('span', { class: 'warn-inline', text: 'weak' }) : null)));
   renderLayerSummary();
 }
 

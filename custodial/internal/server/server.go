@@ -26,8 +26,9 @@ func New() *Server {
 	return s
 }
 
-func (s *Server) Handler(web fs.FS) http.Handler {
+func (s *Server) Handler(web fs.FS, shared string) http.Handler {
 	mux := http.NewServeMux()
+	webapp.Shared(mux, shared)
 	// Revalidate on every request so edited frontend files show up on refresh.
 	mux.Handle("GET /", webapp.NoCache(http.FileServerFS(web)))
 

@@ -28,6 +28,7 @@ served straight from disk, so editing one only needs a browser refresh.
 common/       code both applications use
   codec/      the error-correcting mark codec and the attribution rule
   webapp/     JSON API and static file plumbing
+  web/        the house stylesheet and wordmark, served by both at /shared/
 custodial/    document attribution
   internal/document/  PDF pipeline: typesetting, parsing, the marking layers
   internal/office/    Open XML pipeline: docx, pptx, xlsx

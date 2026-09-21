@@ -18,7 +18,7 @@ export async function showVerify() {
       ? 'PDF, PNG or JPEG, up to 25 MB'
       : `${st.document.kindName}, a PDF export or screenshot of it, or text copied out of it, up to 25 MB`;
     box.replaceChildren(
-      el('span', { class: 'muted', text: 'Checking against' }),
+      el('span', { class: 'muted', text: 'Checking against: ' }),
       el('b', { text: st.document.title }),
       el('span', { class: 'muted', text: `· ${n} cop${n === 1 ? 'y' : 'ies'} issued` }),
       ...(n === 0 ? [el('a', { class: 'warn-inline', href: '#tag', text: 'No copies issued yet' })] : []),
