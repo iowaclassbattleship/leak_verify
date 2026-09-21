@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"custodial/internal/codec"
+	"attribution/common/codec"
 )
 
 const customPart = "docProps/custom.xml"

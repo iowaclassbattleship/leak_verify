@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"custodial/internal/codec"
-	"custodial/internal/document"
+	"attribution/common/codec"
+	"attribution/custodial/internal/document"
 )
 
 // fixtures are real files produced by LibreOffice; set OFFICE_FIXTURES to the

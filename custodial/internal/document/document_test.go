@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"custodial/internal/codec"
+	"attribution/common/codec"
 )
 
 func TestPipeline(t *testing.T) {

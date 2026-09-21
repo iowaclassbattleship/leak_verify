@@ -301,3 +301,6 @@ a.brand { color: inherit; text-decoration: none; }
 .button[hidden] { display: none; }
 .doc-icon.csv { background: #e3f5ec; color: var(--ok); border-color: #b7e3cb; }
 .recip .linklike { font-size: 12px; }
+
+.grow { flex: 1; }
+.viewer { font-size: 13px; color: var(--muted, #667); }

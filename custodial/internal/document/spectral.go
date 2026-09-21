@@ -12,7 +12,7 @@ import (
 	"math/rand/v2"
 	"sort"
 
-	"custodial/internal/codec"
+	"attribution/common/codec"
 )
 
 // Frequency-domain layer: a spread-spectrum watermark (Cox et al.).

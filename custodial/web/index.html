@@ -17,6 +17,7 @@
   <nav class="tabs" role="tablist">
     <a href="#tag" role="tab" data-tab="tag">Tag</a>
     <a href="#verify" role="tab" data-tab="verify">Verify</a>
+    <a href="#log" role="tab" data-tab="log">Log</a>
   </nav>
 </header>
 
@@ -131,6 +132,21 @@
     </label>
 
     <div id="verify-results" class="verify-results"></div>
+  </section>
+
+  <!-- ================================= LOG ================================= -->
+  <section id="log" class="module" hidden>
+    <div class="panel">
+      <header>
+        <h2>Issuance log</h2>
+        <span class="grow"></span>
+        <label class="viewer">Viewing as <select id="log-viewer"></select></label>
+      </header>
+      <div class="body">
+        <p id="log-scope" class="muted small"></p>
+        <div id="log-table"></div>
+      </div>
+    </div>
   </section>
 </main>
 

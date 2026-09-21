@@ -1,4 +1,4 @@
-module custodial
+module attribution
 
 go 1.25
 

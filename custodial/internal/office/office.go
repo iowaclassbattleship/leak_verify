@@ -22,7 +22,7 @@ import (
 	"sort"
 	"strings"
 
-	"custodial/internal/codec"
+	"attribution/common/codec"
 )
 
 type Kind string

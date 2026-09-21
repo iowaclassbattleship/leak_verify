@@ -6,14 +6,14 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
 
-	"custodial/internal/codec"
-	"custodial/internal/document"
-	"custodial/internal/office"
+	"attribution/common/codec"
+	"attribution/common/webapp"
+	"attribution/custodial/internal/document"
+	"attribution/custodial/internal/office"
 )
 
 // Unit is a node of the privilege hierarchy. A viewer sees issuance-log
@@ -160,19 +160,8 @@ func (s *Server) layers() []layerSpec {
 	return officeLayers
 }
 
-var unsafeFileChars = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
-
 // fileStem turns free text into a conservative file-name fragment.
-func fileStem(text string) string {
-	stem := strings.Trim(unsafeFileChars.ReplaceAllString(document.Normalize(text), "-"), "-.")
-	if len(stem) > 60 {
-		stem = strings.TrimRight(stem[:60], "-.")
-	}
-	if stem == "" {
-		return "document"
-	}
-	return stem
-}
+func fileStem(text string) string { return webapp.FileStem(document.Normalize(text), "document") }
 
 func (s *Server) docIssued() []document.Issued {
 	var out []document.Issued
@@ -232,7 +221,7 @@ func (s *Server) docStateHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		log = append(log, e)
 	}
-	writeJSON(w, map[string]any{
+	webapp.WriteJSON(w, map[string]any{
 		"document": s.documentInfo(),
 		"layers":   s.layers(),
 		"roster":   roster,
@@ -289,7 +278,7 @@ func (s *Server) docSource(w http.ResponseWriter, r *http.Request) {
 		s.docStateHandler(w, r)
 		return
 	}
-	data, name, ok := readUpload(w, r)
+	data, name, ok := webapp.ReadUpload(w, r)
 	if !ok {
 		return
 	}
@@ -298,11 +287,11 @@ func (s *Server) docSource(w http.ResponseWriter, r *http.Request) {
 	if office.IsOfficeFile(data) {
 		f, err := office.Parse(data)
 		if err != nil {
-			writeErr(w, http.StatusBadRequest, fmt.Sprintf("%s: %v", name, err))
+			webapp.WriteErr(w, http.StatusBadRequest, fmt.Sprintf("%s: %v", name, err))
 			return
 		}
 		if f.Stats().Words < 20 {
-			writeErr(w, http.StatusBadRequest, "this file holds too little text to carry a mark")
+			webapp.WriteErr(w, http.StatusBadRequest, "this file holds too little text to carry a mark")
 			return
 		}
 		s.mu.Lock()
@@ -375,7 +364,7 @@ func (s *Server) docMasterPDF(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	data := s.doc.master.PDF
 	s.mu.Unlock()
-	sendFile(w, "application/pdf", "master_UNMARKED.pdf", data, true)
+	webapp.SendFile(w, "application/pdf", "master_UNMARKED.pdf", data, true)
 }
 
 func (s *Server) docIssue(w http.ResponseWriter, r *http.Request) {
@@ -384,11 +373,11 @@ func (s *Server) docIssue(w http.ResponseWriter, r *http.Request) {
 		Layers     map[string]bool `json:"layers"`
 		IssuedBy   string          `json:"issuedBy"`
 	}
-	if !readJSON(w, r, &req) {
+	if !webapp.ReadJSON(w, r, &req) {
 		return
 	}
 	if len(req.Recipients) == 0 || len(req.Recipients) > 50 {
-		writeErr(w, http.StatusBadRequest, "issue between 1 and 50 copies")
+		webapp.WriteErr(w, http.StatusBadRequest, "issue between 1 and 50 copies")
 		return
 	}
 	if strings.TrimSpace(req.IssuedBy) == "" {
@@ -417,7 +406,7 @@ func (s *Server) docIssue(w http.ResponseWriter, r *http.Request) {
 			var tile []byte
 			if req.Layers["background"] {
 				if tile, err = s.engine.WatermarkTilePNG(s.key.Encode(id)); err != nil {
-					writeErr(w, http.StatusInternalServerError, err.Error())
+					webapp.WriteErr(w, http.StatusInternalServerError, err.Error())
 					return
 				}
 			}
@@ -432,14 +421,14 @@ func (s *Server) docIssue(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err.Error())
+			webapp.WriteErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		is.SizeBytes = len(is.data)
 		s.doc.issued = append(s.doc.issued, is)
 		out = append(out, is)
 	}
-	writeJSON(w, out)
+	webapp.WriteJSON(w, out)
 }
 
 func (s *Server) docCopy(w http.ResponseWriter, r *http.Request) {
@@ -447,10 +436,10 @@ func (s *Server) docCopy(w http.ResponseWriter, r *http.Request) {
 	is := s.docFind(r.URL.Query().Get("mark"))
 	s.mu.Unlock()
 	if is == nil {
-		writeErr(w, http.StatusNotFound, "unknown mark")
+		webapp.WriteErr(w, http.StatusNotFound, "unknown mark")
 		return
 	}
-	sendFile(w, mimeFor(s.doc.kind), is.FileName, is.data, s.doc.kind == "pdf" && r.URL.Query().Get("download") == "")
+	webapp.SendFile(w, mimeFor(s.doc.kind), is.FileName, is.data, s.doc.kind == "pdf" && r.URL.Query().Get("download") == "")
 }
 
 // docBundle zips the requested tagged copies for one download.
@@ -465,7 +454,7 @@ func (s *Server) docBundle(w http.ResponseWriter, r *http.Request) {
 	base := s.doc.fileBase
 	s.mu.Unlock()
 	if len(copies) == 0 {
-		writeErr(w, http.StatusNotFound, "no matching tagged copies")
+		webapp.WriteErr(w, http.StatusNotFound, "no matching tagged copies")
 		return
 	}
 	var buf bytes.Buffer
@@ -482,16 +471,16 @@ func (s *Server) docBundle(w http.ResponseWriter, r *http.Request) {
 			_, err = f.Write(is.data)
 		}
 		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err.Error())
+			webapp.WriteErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 	}
 	zw.Close()
-	sendFile(w, "application/zip", base+"_tagged-copies.zip", buf.Bytes(), false)
+	webapp.SendFile(w, "application/zip", base+"_tagged-copies.zip", buf.Bytes(), false)
 }
 
 func (s *Server) docDetect(w http.ResponseWriter, r *http.Request) {
-	data, name, ok := readUpload(w, r)
+	data, name, ok := webapp.ReadUpload(w, r)
 	if !ok {
 		return
 	}
@@ -502,7 +491,7 @@ func (s *Server) docDetect(w http.ResponseWriter, r *http.Request) {
 	case s.doc.office != nil && office.IsOfficeFile(data):
 		rep, err := office.Detect(s.key, data, s.officeIssued(), s.engine.ReadWatermarkTile)
 		if err != nil {
-			writeErr(w, http.StatusBadRequest, fmt.Sprintf("%s: %v", name, err))
+			webapp.WriteErr(w, http.StatusBadRequest, fmt.Sprintf("%s: %v", name, err))
 			return
 		}
 		payload = rep
@@ -511,19 +500,19 @@ func (s *Server) docDetect(w http.ResponseWriter, r *http.Request) {
 		payload = office.DetectCapture(s.key, "Rendering of a page", v, note, ok, s.officeIssued())
 	case s.doc.office != nil:
 		if !utf8.Valid(data) {
-			writeErr(w, http.StatusBadRequest, "expected the file, a rendering of it, or text copied out of it")
+			webapp.WriteErr(w, http.StatusBadRequest, "expected the file, a rendering of it, or text copied out of it")
 			return
 		}
 		payload = office.DetectText(s.key, string(data), s.officeIssued())
 	default:
 		rep, err := s.engine.Detect(s.doc.master, s.docIssued(), data)
 		if err != nil {
-			writeErr(w, http.StatusBadRequest, fmt.Sprintf("%s: %v", name, err))
+			webapp.WriteErr(w, http.StatusBadRequest, fmt.Sprintf("%s: %v", name, err))
 			return
 		}
 		payload = rep
 	}
-	writeJSON(w, map[string]any{"name": name, "report": payload})
+	webapp.WriteJSON(w, map[string]any{"name": name, "report": payload})
 }
 
 // isRendering reports whether the upload is a rendering of a page rather than

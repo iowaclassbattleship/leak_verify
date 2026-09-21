@@ -11,7 +11,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"custodial/internal/codec"
+	"attribution/common/codec"
 )
 
 type Result struct {

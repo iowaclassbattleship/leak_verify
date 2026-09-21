@@ -8,7 +8,7 @@ import (
 	"strings"
 	"unicode"
 
-	"custodial/internal/codec"
+	"attribution/common/codec"
 )
 
 // Zero-width characters used by the text carrier. Both are legal in XML and

@@ -1,8 +1,9 @@
 import { $$ } from './common.js';
 import { initTag } from './tag.js';
 import { initVerify, showVerify } from './verify.js';
+import { initLog, showLog } from './log.js';
 
-const tabs = { tag: initTag, verify: initVerify };
+const tabs = { tag: initTag, verify: initVerify, log: initLog };
 const inited = {};
 
 function show() {
@@ -14,6 +15,7 @@ function show() {
     tabs[tab]();
   }
   if (tab === 'verify') showVerify();
+  if (tab === 'log') showLog();
 }
 
 window.addEventListener('hashchange', show);

@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"custodial/internal/codec"
+	"attribution/common/codec"
 )
 
 const (
