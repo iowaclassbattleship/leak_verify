@@ -8,21 +8,27 @@ import (
 	"sync"
 
 	"attribution/common/codec"
+	"attribution/common/store"
 	"attribution/common/webapp"
 	"attribution/custodial/internal/document"
 )
 
 type Server struct {
+	user  string
+	store *store.Store
+
 	mu     sync.Mutex
 	key    codec.Key
 	engine *document.Engine
 	doc    *docState
 }
 
-func New() *Server {
-	key := codec.NewKey()
-	s := &Server{key: key, engine: document.NewEngine(key)}
+// New builds one user's instance. key is derived per user so it survives a
+// restart, and st holds their issuance log between processes.
+func New(key codec.Key, user string, st *store.Store) *Server {
+	s := &Server{key: key, engine: document.NewEngine(key), user: user, store: st}
 	s.resetDocument(s.engine.NewMaster(document.SampleDoc(), sampleSource), "Project-Halcyon-Board-Briefing")
+	s.loadLog()
 	return s
 }
 
@@ -37,7 +43,9 @@ func (s *Server) Handler(web fs.FS, shared string) http.Handler {
 	mux.HandleFunc("GET /api/master.pdf", s.docMasterPDF)
 	mux.HandleFunc("POST /api/issue", s.docIssue)
 	mux.HandleFunc("GET /api/copy", s.docCopy)
+	mux.HandleFunc("POST /api/recall", s.docRecall)
 	mux.HandleFunc("GET /api/bundle", s.docBundle)
 	mux.HandleFunc("POST /api/detect", s.docDetect)
-	return webapp.LogRequests(mux)
+	// Requests are recorded by the audit log in internal/app.
+	return mux
 }

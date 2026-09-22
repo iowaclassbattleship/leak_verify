@@ -1,4 +1,4 @@
-import { $, $$, el, api, toast, busy, setupDropzone, setText } from './common.js';
+import { $, $$, el, api, toast, busy, setupDropzone, setText, apiURL } from './common.js';
 
 // Three-step share flow: document, recipients, download.
 
@@ -150,7 +150,8 @@ function renderLayers() {
   $('#doc-layers').replaceChildren(...(state.layers || []).map((l) => el('label', {},
     el('input', { type: 'checkbox', name: l.key, checked: keep[l.key] === undefined ? l.default : keep[l.key] }),
     el('b', { text: l.name }),
-    l.weak ? el('span', { class: 'warn-inline', text: 'weak' }) : null)));
+    l.weak ? el('span', { class: 'warn-inline', text: 'weak' }) : null,
+    el('small', { class: 'muted', text: l.description }))));
   renderLayerSummary();
 }
 
@@ -212,7 +213,7 @@ function renderCopies() {
     el('span', { class: 'copy-file' },
       el('span', { class: 'fname', text: c.fileName }),
       el('small', { class: 'muted' }, `${Math.round(c.sizeBytes / 1024)} KB, tag `, el('span', { class: 'mono', text: c.markId }))),
-    el('a', { class: 'button secondary-btn', href: `/api/copy?mark=${c.markId}&download=1`, download: c.fileName, text: 'Download' }))));
-  $('#tag-zip').href = `/api/bundle?marks=${batch.map((c) => c.markId).join(',')}`;
+    el('a', { class: 'button secondary-btn', href: apiURL(`/api/copy?mark=${c.markId}&download=1`), download: c.fileName, text: 'Download' }))));
+  $('#tag-zip').href = apiURL(`/api/bundle?marks=${batch.map((c) => c.markId).join(',')}`);
   $('#tag-zip').hidden = n < 2;
 }

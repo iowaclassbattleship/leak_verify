@@ -29,6 +29,9 @@ export async function showVerify() {
 }
 
 export async function verifyFiles(files) {
+  // Each drop replaces the last result. Several files dropped together still
+  // all get a card.
+  $('#verify-results').replaceChildren();
   for (const file of files) await verifyFile(file);
 }
 
@@ -36,7 +39,7 @@ export async function verifyFile(file) {
   const card = el('article', { class: 'verify-card pending' },
     el('div', { class: 'vc-head' }, el('b', { text: file.name }), el('span', { class: 'muted small', text: fmtSize(file.size) })),
     el('div', { class: 'vc-status spinner', text: 'Checking' }));
-  $('#verify-results').prepend(card);
+  $('#verify-results').append(card);
 
   const form = new FormData();
   form.append('file', file);

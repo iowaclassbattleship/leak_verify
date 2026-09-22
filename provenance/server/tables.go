@@ -39,6 +39,7 @@ func (s *Server) reset(t *tabular.Table, source, fileBase string) {
 		fileBase: fileBase,
 		leaks:    map[string]*tabLeak{},
 	}
+	s.restore()
 }
 
 func (s *Server) issuance(mark string) *tabular.Issuance {
@@ -119,6 +120,7 @@ func (s *Server) schema(w http.ResponseWriter, r *http.Request) {
 	s.tab.reg.Schema = req
 	s.tab.reg.Issued = nil
 	s.tab.reg.Copies = map[uint16]*tabular.Table{}
+	s.restore() // the schema changed, so the copies must be regenerated
 	webapp.WriteJSON(w, map[string]any{"schema": req})
 }
 
@@ -155,10 +157,19 @@ func (s *Server) markedCSV(w http.ResponseWriter, r *http.Request) {
 // log, so Verify has something to check a recovered file against. There is one
 // copy in this demonstrator, so registering it again simply replaces it.
 func (s *Server) record(tech tabular.Techniques) {
-	copy, iss := tabular.MarkCopy(s.key, s.tab.reg.Master, s.tab.reg.Schema, previewID, tech)
-	iss.Recipient = "the issued copy"
-	s.tab.reg.Issued = []*tabular.Issuance{iss}
-	s.tab.reg.Copies = map[uint16]*tabular.Table{previewID: copy}
+	copyT, iss := tabular.MarkCopy(s.key, s.tab.reg.Master, s.tab.reg.Schema, previewID, tech)
+	iss.Recipient = "the copy from the Mark tab"
+
+	// Replace only the Mark tab's own entry. Copies issued to real recipients
+	// stay on the log, or changing a measure would erase them.
+	kept := s.tab.reg.Issued[:0]
+	for _, is := range s.tab.reg.Issued {
+		if is.MarkID != previewID {
+			kept = append(kept, is)
+		}
+	}
+	s.tab.reg.Issued = append(kept, iss)
+	s.tab.reg.Copies[previewID] = copyT
 }
 
 // preview shows what the selected measures do to the head of the table,
@@ -228,7 +239,39 @@ func (s *Server) issue(w http.ResponseWriter, r *http.Request) {
 		s.tab.reg.Copies[id] = copyT
 		out = append(out, is)
 	}
+	s.saveLog()
 	webapp.WriteJSON(w, out)
+}
+
+// recall removes an issuance from the log. The copy already handed over is of
+// course still out there; what goes is this centre's record of who has it, so
+// a recovered file will no longer be traced to them.
+func (s *Server) recall(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Mark string `json:"mark"`
+	}
+	if !webapp.ReadJSON(w, r, &req) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kept := s.tab.reg.Issued[:0]
+	found := false
+	for _, is := range s.tab.reg.Issued {
+		if is.Mark == req.Mark && is.MarkID != previewID {
+			delete(s.tab.reg.Copies, is.MarkID)
+			found = true
+			continue
+		}
+		kept = append(kept, is)
+	}
+	s.tab.reg.Issued = kept
+	if !found {
+		webapp.WriteErr(w, http.StatusNotFound, "unknown mark")
+		return
+	}
+	s.saveLog()
+	webapp.WriteJSON(w, map[string]any{"recalled": req.Mark})
 }
 
 func (s *Server) copy(w http.ResponseWriter, r *http.Request) {

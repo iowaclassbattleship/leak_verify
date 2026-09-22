@@ -11,12 +11,12 @@
 <body>
 <header class="top">
   <div class="brand">
-      <img src="/shared/northward.png" alt="northward">
-      <span class="name">Provenance</span>
+      <a href="/"><img src="/shared/northward.png" alt="northward"></a>
     </div>
   <nav class="tabs" role="tablist">
     <a href="#mark" role="tab" data-tab="mark">Mark</a>
     <a href="#verify" role="tab" data-tab="verify">Verify</a>
+    <span class="user" data-user></span>
   </nav>
 </header>
 
@@ -31,7 +31,7 @@
         <button type="button" id="mark-example">Load example</button>
         <label class="button" for="mark-file">Load a CSV</label>
         <input id="mark-file" type="file" accept=".csv,text/csv" hidden>
-        <a class="button" id="mark-download" href="/api/source.csv" hidden>Download source</a>
+        <a class="button" id="mark-download" href="/api/data/source.csv" hidden>Download source</a>
       </div>
     </fieldset>
 
@@ -39,22 +39,24 @@
       <legend>Measures</legend>
       <div id="mark-measures">
         <h4>Changes the data</h4>
-        <label><input type="checkbox" name="canary"> <b>Canary rows</b></label>
-        <label><input type="checkbox" name="allocate"> <b>Allocation</b></label>
-        <label><input type="checkbox" name="lowBit"> <b>Low-order bits</b></label>
-        <div class="param">perturb <select data-param="lowBitDepth">
-          <option value="0">the last decimal place</option>
-          <option value="1">one place before the last</option>
-          <option value="2">two places before the last</option>
-          <option value="3">three places before the last</option>
-        </select></div>
-        <label><input type="checkbox" name="redact"> <b>Redaction as carrier</b></label>
+        <label><input type="checkbox" name="canary"> <b>Canary rows</b>
+          <span class="dim">Synthetic rows added. The row count rises.</span></label>
+        <label><input type="checkbox" name="allocate"> <b>Allocation</b>
+          <span class="dim">Rows withheld. Every count falls.</span></label>
+        <label><input type="checkbox" name="lowBit"> <b>Low-order bits</b>
+          <span class="dim">The last digit of tolerant columns.</span></label>
+        <label><input type="checkbox" name="noise"> <b>Noise as carrier</b>
+          <span class="dim">Seeds the noise the pipeline already adds.</span></label>
+        <label><input type="checkbox" name="redact"> <b>Redaction as carrier</b>
+          <span class="dim">Names replaced by a keyed pseudonym.</span></label>
 
         <h4>Leaves the data unchanged</h4>
-        <label><input type="checkbox" name="noise"> <b>Noise as carrier</b></label>
-        <label><input type="checkbox" name="order"> <b>Tuple ordering</b></label>
-        <label><input type="checkbox" name="format"> <b>Free choices</b></label>
-        <label><input type="checkbox" name="dummy"> <b>Dummy column</b></label>
+        <label><input type="checkbox" name="order"> <b>Tuple ordering</b>
+          <span class="dim">Neighbouring rows swapped.</span></label>
+        <label><input type="checkbox" name="format"> <b>Free choices</b>
+          <span class="dim">1532.22 written as 1532.220.</span></label>
+        <label><input type="checkbox" name="dummy"> <b>Dummy column</b>
+          <span class="dim">One column added. Nothing else touched.</span></label>
       </div>
     </fieldset>
 
@@ -66,8 +68,30 @@
       <div id="mark-impact"></div>
       <div class="row" id="mark-actions" hidden>
         <span class="grow"></span>
-        <a class="button primary" id="mark-copy" href="/api/marked.csv">Download marked copy</a>
+        <a class="button" id="mark-copy" href="/api/data/marked.csv">Download unassigned copy</a>
       </div>
+    </fieldset>
+
+    <fieldset id="mark-issue" hidden>
+      <legend>Issue to a recipient</legend>
+      <p class="dim">Each recipient gets their own copy, marked with the measures above. A recovered file
+        is traced back to whichever of these it came from.</p>
+
+      <div id="issue-list" class="list"></div>
+      <p id="issue-empty" class="dim small">Nobody added yet.</p>
+
+      <form id="issue-add" class="addform">
+        <input name="name" placeholder="Name or organisation" required>
+        <input name="org" placeholder="Purpose, optional">
+        <button type="submit">Add</button>
+      </form>
+
+      <div class="row" id="issue-actions">
+        <span class="grow"></span>
+        <button type="button" class="primary" id="issue-create" disabled>Issue copies</button>
+      </div>
+
+      <div id="issue-copies"></div>
     </fieldset>
   </section>
 
@@ -89,5 +113,6 @@
 
 <div id="toast" class="toast" hidden></div>
 <script type="module" src="app.js"></script>
+  <script src="/shared/session.js"></script>
 </body>
 </html>

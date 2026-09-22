@@ -1,0 +1,19 @@
+services:
+  attribution:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      # The sign-in list. Copy config.example.yaml to config.yaml and edit it.
+      - ./config.yaml:/app/config.yaml:ro
+      # Issuance logs, so a copy issued before a restart can still be named.
+      # Marked files and keys are not written here.
+      - attribution-data:/app/data
+    environment:
+      # Set to 1 when a TLS-terminating proxy sits in front, so the session
+      # cookie is only sent over HTTPS.
+      SECURE_COOKIE: ${SECURE_COOKIE:-0}
+    restart: unless-stopped
+
+volumes:
+  attribution-data:

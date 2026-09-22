@@ -2,11 +2,10 @@
    the marking preview lives here. */
 
 /* measures */
-#mark-measures label { display: block; margin: 6px 0; }
+#mark-measures label { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin: 12px 0; }
+#mark-measures label .dim { flex-basis: 100%; margin-left: 24px; font-size: 12.5px; }
 #mark-measures h4 { margin: 18px 0 8px; }
 #mark-measures h4:first-child { margin-top: 0; }
-.param { margin: 2px 0 10px 24px; color: var(--muted); font-size: 12.5px; }
-.param select { font-size: 12.5px; }
 
 /* the marked-up preview table */
 th .role {
@@ -41,3 +40,16 @@ tr.moved td:first-child { box-shadow: inset 4px 0 0 var(--ink); }
 
 /* verify */
 td.wrap, .wrap { white-space: normal; max-width: 44em; }
+
+/* issuing to recipients */
+.addform { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; margin-top: 12px; }
+@media (max-width: 620px) { .addform { grid-template-columns: 1fr; } }
+#issue-actions { margin-top: 16px; }
+#issue-copies .copy { display: flex; align-items: baseline; gap: 14px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+#issue-copies .copy .who { flex: 1; min-width: 0; }
+#issue-copies .copy .fname { font-family: var(--mono); font-size: 12.5px; }
+.recall {
+  border: 0; background: none; padding: 0 4px; line-height: 1;
+  font-size: 19px; color: var(--muted); cursor: pointer;
+}
+.recall:hover { background: none; color: var(--bad); }

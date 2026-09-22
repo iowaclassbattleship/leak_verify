@@ -1,11 +1,11 @@
-import { $, $$, el, api, toast, busy } from './common.js';
+import { $, $$, el, api, toast, busy, apiURL } from './common.js';
+import { initIssue, setIssueVisible } from './issue.js';
 
 // The marking tab shows the head of the loaded table and re-renders it every
 // time a measure is toggled, so the cost of each measure is visible rather
 // than described. Nothing is shown until a table is loaded.
 
 const measures = () => Object.fromEntries($$('#mark-measures input').map((i) => [i.name, i.checked]));
-const params = () => Object.fromEntries($$('#mark-measures [data-param]').map((i) => [i.dataset.param, Number(i.value)]));
 
 let loaded = false;
 
@@ -15,6 +15,7 @@ function setLoaded(on) {
   $('#mark-download').hidden = !on;
   $('#mark-lede').hidden = !on;
   $('#mark-actions').hidden = !on;
+  setIssueVisible(on);
   if (!on) {
     $('#mark-source').textContent = 'no table loaded';
     $('#mark-preview').replaceChildren(el('div', { class: 'empty', text: '' }));
@@ -26,13 +27,12 @@ async function refresh() {
   if (!loaded) return;
   const box = $('#mark-preview');
   try {
-    const { preview, markId, source, total } = await api('/api/preview', { json: { techniques: { ...measures(), params: params() }, rows: 10 } });
+    const { preview, markId, source, total } = await api('/api/preview', { json: { techniques: measures(), rows: 10 } });
     $('#mark-source').textContent = `${source}, ${total.toLocaleString()} rows, marked as ${markId}`;
     renderTable(box, preview);
     renderImpact($('#mark-impact'), preview.impact);
-    const q = Object.entries(measures()).filter(([, v]) => v).map(([k]) => `${k}=1`)
-      .concat(Object.entries(params()).map(([k, v]) => `${k}=${v}`));
-    $('#mark-copy').href = '/api/marked.csv' + (q.length ? '?' + q.join('&') : '');
+    const on = Object.entries(measures()).filter(([, v]) => v).map(([k]) => `${k}=1`);
+    $('#mark-copy').href = apiURL('/api/marked.csv') + (on.length ? '?' + on.join('&') : '');
   } catch (err) {
     box.replaceChildren(el('div', { class: 'empty', text: err.message }));
     toast(err.message, true);
@@ -94,6 +94,7 @@ async function load(fn) {
 }
 
 export function initMark() {
+  initIssue(measures);
   setLoaded(false);
   for (const input of $$('#mark-measures input, #mark-measures select')) input.addEventListener('change', refresh);
   $('#mark-example').addEventListener('click', (e) =>

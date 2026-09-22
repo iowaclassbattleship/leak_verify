@@ -24,6 +24,11 @@ export function setText(sel, text) {
   if (node) node.textContent = text;
 }
 
+// The two products share one backend, so each one's API lives under its own
+// prefix. Paths are written as /api/... throughout and resolved here.
+export const API_BASE = '/api/doc';
+export const apiURL = (p) => (p.startsWith('/api/') ? API_BASE + p.slice(4) : p);
+
 export async function api(path, { method = 'GET', json, form } = {}) {
   const opts = { method, headers: {} };
   if (json !== undefined) {
@@ -34,7 +39,7 @@ export async function api(path, { method = 'GET', json, form } = {}) {
     opts.method = 'POST';
     opts.body = form;
   }
-  const res = await fetch(path, opts);
+  const res = await fetch(apiURL(path), opts);
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.error || `${res.status} ${res.statusText}`);
   return body;

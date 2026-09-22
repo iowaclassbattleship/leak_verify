@@ -93,6 +93,8 @@ type docIssuance struct {
 	Layers    map[string]bool `json:"layers"`
 	SizeBytes int             `json:"sizeBytes"`
 	FileName  string          `json:"fileName"`
+	Source    string          `json:"source"`
+	Restored  bool            `json:"restored,omitempty"` // issued before a restart, bytes gone
 }
 
 func (d *docIssuance) label() string { return d.Name + " (" + d.Role + ")" }
@@ -113,12 +115,23 @@ type docState struct {
 
 const sampleSource = "Built-in sample briefing"
 
+// keptIssued carries the issuance log across a change of source. The log
+// belongs to the user, not to whichever document happens to be loaded.
+func (s *Server) keptIssued() []*docIssuance {
+	if s.doc == nil {
+		return nil
+	}
+	return s.doc.issued
+}
+
 func (s *Server) resetDocument(m *document.Master, fileBase string) {
-	s.doc = &docState{master: m, kind: "pdf", source: m.Source, warnings: m.Warnings, fileBase: fileBase, ext: ".pdf"}
+	s.doc = &docState{master: m, kind: "pdf", source: m.Source, warnings: m.Warnings,
+		fileBase: fileBase, ext: ".pdf", issued: s.keptIssued()}
 }
 
 func (s *Server) resetOffice(f *office.File, name, source, fileBase string) {
-	st := &docState{office: f, kind: string(f.Kind), source: source, fileBase: fileBase, ext: "." + string(f.Kind), title: name}
+	st := &docState{office: f, kind: string(f.Kind), source: source, fileBase: fileBase,
+		ext: "." + string(f.Kind), title: name, issued: s.keptIssued()}
 	stats := f.StatsWithKey(s.key)
 	if stats.SpacingBits < codec.CodeLen {
 		st.warnings = append(st.warnings, fmt.Sprintf("The spacing mark reaches only %d of %d bits in this file, so it can support the other layers but not identify a recipient on its own.", stats.SpacingBits, codec.CodeLen))
@@ -139,18 +152,18 @@ type layerSpec struct {
 }
 
 var pdfLayers = []layerSpec{
-	{"layout", "Layout", "Line positions shifted by 0.45 pt. Survives print and scan.", false, true},
-	{"spectral", "Frequency domain", "Invisible texture behind the page. Survives cropped screenshots.", false, true},
-	{"object", "Object layer", "Near-white tint grid. Survives full screenshots.", false, true},
-	{"metadata", "Metadata", "Tag in the document properties. Stripped by any re-save.", true, true},
+	{"layout", "Layout", "Baselines shifted 0.45 pt. Survives print and scan.", false, true},
+	{"spectral", "Frequency domain", "Faint texture behind the page. Survives cropped screenshots.", false, true},
+	{"object", "Object layer", "Near-white tint grid. Survives screenshots, not print.", false, true},
+	{"metadata", "Metadata", "A document property. Any re-save strips it.", true, true},
 }
 
 var officeLayers = []layerSpec{
-	{"background", "Background watermark", "A frequency-domain texture tiled behind the page, the slide master or the sheet. Changes no text, so editing leaves it in place, and it reads back from a PDF export or a screenshot of the rendered page. In Excel it is a sheet background, which shows on screen but does not print.", false, true},
-	{"customxml", "Custom XML part", "The identifier in a data part of the package. Changes no text and is invisible in the application, so any amount of editing keeps it. Removed by the document inspector.", false, true},
-	{"spacing", "Spacing", "Character spacing of a twentieth of a point per word, or the last digit of row heights in a workbook. Changes no text and survives re-saves that keep formatting, but is lost when runs are retyped.", false, true},
-	{"text", "Invisible characters", "A zero-width character after about one word in eight. The only layer that survives copy and paste, but it does change the text bytes, and some editors show the character.", false, false},
-	{"metadata", "Metadata", "A custom document property. Removed by the document inspector.", true, true},
+	{"background", "Background watermark", "Faint texture behind the page. Survives editing and export to PDF.", false, true},
+	{"customxml", "Custom XML part", "A hidden data part. Survives any edit, removed by the inspector.", false, true},
+	{"spacing", "Spacing", "Character spacing per word. Lost when runs are retyped.", false, true},
+	{"text", "Invisible characters", "A zero-width character after some words. The only layer that survives copy and paste.", false, false},
+	{"metadata", "Metadata", "A document property. The inspector removes it.", true, true},
 }
 
 func (s *Server) layers() []layerSpec {
@@ -425,10 +438,41 @@ func (s *Server) docIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		is.SizeBytes = len(is.data)
+		is.Source = s.doc.source
 		s.doc.issued = append(s.doc.issued, is)
 		out = append(out, is)
 	}
+	s.saveLog()
 	webapp.WriteJSON(w, out)
+}
+
+// docRecall removes an issuance from the log. The copy already handed over is
+// of course still out there; what goes is the record of who has it.
+func (s *Server) docRecall(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Mark string `json:"mark"`
+	}
+	if !webapp.ReadJSON(w, r, &req) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kept := s.doc.issued[:0]
+	found := false
+	for _, is := range s.doc.issued {
+		if is.MarkID == req.Mark {
+			found = true
+			continue
+		}
+		kept = append(kept, is)
+	}
+	s.doc.issued = kept
+	if !found {
+		webapp.WriteErr(w, http.StatusNotFound, "unknown mark")
+		return
+	}
+	s.saveLog()
+	webapp.WriteJSON(w, map[string]any{"recalled": req.Mark})
 }
 
 func (s *Server) docCopy(w http.ResponseWriter, r *http.Request) {
@@ -439,6 +483,12 @@ func (s *Server) docCopy(w http.ResponseWriter, r *http.Request) {
 		webapp.WriteErr(w, http.StatusNotFound, "unknown mark")
 		return
 	}
+	if len(is.data) == 0 {
+		// Restored from the log, so the bytes are gone. The entry still names
+		// the recipient when a recovered file is verified.
+		webapp.WriteErr(w, http.StatusGone, "this copy was issued before a restart, so the file is no longer held here. Issue it again to download it.")
+		return
+	}
 	webapp.SendFile(w, mimeFor(s.doc.kind), is.FileName, is.data, s.doc.kind == "pdf" && r.URL.Query().Get("download") == "")
 }
 
@@ -447,7 +497,7 @@ func (s *Server) docBundle(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	var copies []*docIssuance
 	for _, mark := range strings.Split(r.URL.Query().Get("marks"), ",") {
-		if is := s.docFind(strings.TrimSpace(mark)); is != nil {
+		if is := s.docFind(strings.TrimSpace(mark)); is != nil && len(is.data) > 0 {
 			copies = append(copies, is)
 		}
 	}

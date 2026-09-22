@@ -11,13 +11,13 @@
 <body>
 <header class="top">
   <div class="brand">
-    <img src="/shared/northward.png" alt="northward">
-    <span class="name">Custodial</span>
-  </div>
+      <a href="/"><img src="/shared/northward.png" alt="northward"></a>
+    </div>
   <nav class="tabs" role="tablist">
     <a href="#tag" role="tab" data-tab="tag">Tag</a>
     <a href="#verify" role="tab" data-tab="verify">Verify</a>
     <a href="#log" role="tab" data-tab="log">Log</a>
+    <span class="user" data-user></span>
   </nav>
 </header>
 
@@ -57,7 +57,7 @@
                 <span class="muted small" id="tag-doc-meta"></span>
               </div>
               <div class="doc-actions">
-                <a class="button link" id="tag-preview" href="/api/master.pdf" target="_blank" rel="noopener">Preview</a>
+                <a class="button link" id="tag-preview" href="/api/doc/master.pdf" target="_blank" rel="noopener">Preview</a>
                 <button type="button" class="secondary" id="tag-replace">Replace</button>
               </div>
             </div>
@@ -87,10 +87,10 @@
             <button type="submit" class="secondary">Add</button>
           </form>
 
-          <details class="settings">
-            <summary>Protection layers <span id="tag-layer-summary" class="muted small"></span></summary>
+          <div class="settings">
+            <h4>Protection layers <span id="tag-layer-summary" class="muted small"></span></h4>
             <div id="doc-layers" class="checks col"></div>
-          </details>
+          </div>
 
           <div class="wizard-foot">
             <button type="button" class="secondary" id="tag-back-2">Back</button>
@@ -155,5 +155,6 @@
 
 <div id="toast" class="toast" hidden></div>
 <script type="module" src="app.js"></script>
+  <script src="/shared/session.js"></script>
 </body>
 </html>

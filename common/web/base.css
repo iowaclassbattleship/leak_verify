@@ -18,6 +18,9 @@
 
 * { box-sizing: border-box; }
 
+/* A class that sets display beats the hidden attribute otherwise. */
+[hidden] { display: none !important; }
+
 body {
   max-width: 1180px;
   margin: 0 auto;
@@ -61,13 +64,9 @@ header.top {
   border-bottom: 1px solid var(--rule);
   margin-bottom: 28px;
 }
-.brand { display: flex; align-items: baseline; gap: 12px; }
-.brand img { height: 19px; width: auto; display: block; align-self: center; }
-.brand .name {
-  font-size: 19px; font-weight: 300; letter-spacing: -0.01em;
-  padding-left: 12px; border-left: 1px solid var(--line);
-}
-.brand .sub { color: var(--muted); font-size: 12.5px; }
+.brand { display: flex; align-items: center; gap: 12px; }
+.brand a { display: block; line-height: 0; }
+.brand img { height: 19px; width: auto; display: block; }
 
 nav.tabs { display: flex; gap: 22px; margin-left: auto; padding-bottom: 3px; }
 nav.tabs a {
@@ -77,6 +76,15 @@ nav.tabs a {
 }
 nav.tabs a:hover { color: var(--ink); }
 nav.tabs a.active { color: var(--ink); border-bottom-color: var(--ink); }
+.navsep { border-left: 1px solid var(--line); align-self: stretch; margin: 0 4px; }
+nav.tabs a.product { text-transform: none; letter-spacing: 0; font-size: 13px; }
+nav.tabs .user { color: var(--muted); font-size: 12.5px; padding-bottom: 4px; }
+nav.tabs .signout { margin: 0; }
+nav.tabs .signout button {
+  border: 0; padding: 0 0 6px; background: none; color: var(--muted);
+  font-size: 12px; text-transform: uppercase; letter-spacing: .14em; text-decoration: none;
+}
+nav.tabs .signout button:hover { background: none; color: var(--ink); text-decoration: underline; }
 
 /* ---- sections ---- */
 
@@ -103,7 +111,9 @@ button, .button {
 button:hover:not(:disabled), .button:hover { background: var(--ink); color: var(--paper); }
 button.primary, .button.primary { background: var(--ink); color: var(--paper); }
 button.primary:hover, .button.primary:hover { background: var(--paper); color: var(--ink); }
-button:disabled { color: #aaa; border-color: var(--line); cursor: not-allowed; }
+button:disabled, button.primary:disabled {
+  background: var(--paper); color: #aaa; border-color: var(--line); cursor: not-allowed;
+}
 button.link, button.link:hover {
   border: 0; padding: 0; background: none; color: var(--ink);
   text-transform: none; letter-spacing: 0; font-size: inherit; text-decoration: underline;
@@ -113,7 +123,8 @@ input, select {
   font: 400 13px var(--sans); color: var(--ink); background: var(--paper);
   border: 0; border-bottom: 1px solid var(--ink); padding: 6px 2px; accent-color: var(--ink);
 }
-input[type=checkbox] { border: 0; }
+input[type=checkbox] { border: 0; cursor: pointer; }
+label:has(input[type=checkbox]:not(:disabled)) { cursor: pointer; }
 input::placeholder { color: #9a9a9a; }
 label { display: inline-block; }
 summary { cursor: pointer; }
@@ -200,3 +211,31 @@ tbody tr:last-child td { border-bottom: 1px solid var(--rule); }
   header.top { align-items: flex-start; }
   nav.tabs { margin-left: 0; gap: 16px; }
 }
+
+/* ---- home tiles ---- */
+
+.tiles {
+  display: grid; gap: 24px; margin: 36px 0 0;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+}
+.tile {
+  display: flex; flex-direction: column; gap: 10px;
+  border: 1px solid var(--ink); padding: 26px 24px 28px;
+  text-decoration: none; color: var(--ink);
+}
+.tile:hover { background: var(--ink); color: var(--paper); }
+.tile:hover .tile-kind, .tile:hover .tile-text { color: var(--paper); }
+.tile-kind { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: .14em; color: var(--muted); }
+.tile-name { font: 300 30px/1.1 var(--sans); letter-spacing: -0.02em; }
+.tile-text { color: var(--muted); font-size: 13px; }
+.tile-logos { display: flex; gap: 12px; align-items: center; min-height: 30px; margin: 4px 0; }
+.tile-logos img { height: 28px; width: auto; }
+.tile:hover .tile-logos img { filter: grayscale(1) invert(1); }
+/* Provenance has no product logos, so it gets rows of data instead. */
+.tile-rows { flex-direction: column; align-items: flex-start; gap: 5px; }
+.tile-rows span { display: block; height: 3px; background: var(--ink); }
+.tile-rows span:nth-child(1) { width: 58px; }
+.tile-rows span:nth-child(2) { width: 34px; }
+.tile-rows span:nth-child(3) { width: 46px; }
+.tile-rows span:nth-child(4) { width: 26px; }
+.tile:hover .tile-rows span { background: var(--paper); }

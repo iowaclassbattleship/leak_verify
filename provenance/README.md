@@ -38,6 +38,10 @@ browser refresh.
   the previous value struck through, added rows, added columns. Below the table
   the impact is counted over the whole copy, so the cost of each measure is a
   number rather than a claim.
+- **Issue to a recipient:** name the people or organisations a copy is going
+  to and issue one marked copy each, with the measures chosen above. The
+  issuance log is what turns a decoded mark back into a name, and it survives a
+  restart.
 - **Verify:** drop a recovered CSV to check it against the copy the Mark tab is
   configured to produce. Each carrier reports separately, with the stage it
   belongs to (exact or fuzzy matching) and what it found, then the verdict

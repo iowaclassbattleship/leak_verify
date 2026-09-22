@@ -1,0 +1,6 @@
+.git
+.gitignore
+**/*_test.go
+*.md
+northward.png
+config.yaml

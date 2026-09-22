@@ -1,3 +1,5 @@
 /custodial/custodial
 /provenance/provenance
 *.test
+/config.yaml
+/data

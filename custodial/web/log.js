@@ -30,7 +30,7 @@ function renderLog(st) {
   }
   box.replaceChildren(el('div', { class: 'tablewrap' }, el('table', {},
     el('thead', {}, el('tr', {},
-      ['Mark', 'Recipient', 'Role', 'Unit', 'Issued', 'By', 'Layers', 'File'].map((h) => el('th', { text: h })))),
+      ['Mark', 'Recipient', 'Role', 'Unit', 'Issued', 'By', 'Layers', 'File', ''].map((h) => el('th', { text: h })))),
     el('tbody', {}, st.log.map((e) => el('tr', {},
       el('td', {}, e.markId === 'restricted'
         ? el('span', { class: 'muted', text: 'restricted' })
@@ -41,7 +41,23 @@ function renderLog(st) {
       el('td', { class: 'muted', text: new Date(e.issuedAt).toLocaleString() }),
       el('td', { class: 'muted', text: e.issuedBy || '' }),
       el('td', { class: 'muted', text: Object.entries(e.layers || {}).filter(([, v]) => v).map(([k]) => k).join(', ') }),
-      el('td', { class: 'muted', text: e.fileName })))))));
+      el('td', { class: 'muted', text: e.fileName }),
+      el('td', {}, e.markId === 'restricted'
+        ? null
+        : el('button', {
+            class: 'recall', type: 'button', title: `Recall ${e.markId}`, text: '\u00d7',
+            onclick: () => recall(e),
+          }))))))));
+}
+
+async function recall(e) {
+  if (!confirm(`Recall ${e.markId}, issued to ${e.name}?\n\nThe copy they already have is unaffected. What goes is the record of who holds it, so a recovered file will no longer be traced to them.`)) return;
+  try {
+    await api('/api/recall', { json: { mark: e.markId } });
+    await showLog();
+  } catch (err) {
+    $('#log-scope').textContent = err.message;
+  }
 }
 
 export async function showLog() {
