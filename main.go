@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"attribution/common/store"
@@ -21,6 +22,7 @@ func main() {
 	addr := flag.String("addr", envOr("ADDR", "127.0.0.1:8080"), "listen address")
 	configPath := flag.String("config", envOr("CONFIG", "config.yaml"), "path to the user list")
 	secure := flag.Bool("secure-cookie", os.Getenv("SECURE_COOKIE") == "1", "set the Secure flag on the session cookie (use behind HTTPS)")
+	root := flag.String("root", envOr("ROOT", "."), "directory holding custodial/web, provenance/web and common/web")
 	dataDir := flag.String("data", envOr("DATA_DIR", "data"), "where issuance logs are kept; empty keeps nothing")
 	flag.Parse()
 
@@ -35,9 +37,9 @@ func main() {
 		Master:        settings.Master,
 		Secret:        settings.Secret,
 		Store:         &store.Store{Dir: *dataDir},
-		CustodialWeb:  mustDir("custodial/web", "../custodial/web"),
-		ProvenanceWeb: mustDir("provenance/web", "../provenance/web"),
-		SharedWeb:     webapp.SharedDir("common/web", "../common/web"),
+		CustodialWeb:  mustDir(filepath.Join(*root, "custodial/web"), "custodial/web", "../custodial/web"),
+		ProvenanceWeb: mustDir(filepath.Join(*root, "provenance/web"), "provenance/web", "../provenance/web"),
+		SharedWeb:     webapp.SharedDir(filepath.Join(*root, "common/web"), "common/web", "../common/web"),
 		SecureCookie:  *secure,
 	}
 	if cfg.SharedWeb == "" {

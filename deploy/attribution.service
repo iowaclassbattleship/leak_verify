@@ -1,0 +1,48 @@
+# Systemd unit for running the demonstrator directly on an EC2 instance,
+# without Docker. nginx terminates TLS in front of it; see nginx.conf.
+#
+#   sudo useradd --system --home /opt/attribution --shell /usr/sbin/nologin attribution
+#   sudo mkdir -p /opt/attribution /etc/attribution /var/lib/attribution
+#   sudo chown attribution:attribution /var/lib/attribution
+#   sudo chmod 700 /var/lib/attribution
+#   # copy the binary, custodial/web, provenance/web, common/web and samples/
+#   # into /opt/attribution, and config.yaml into /etc/attribution
+#   sudo chmod 600 /etc/attribution/config.yaml
+#   sudo cp deploy/attribution.service /etc/systemd/system/
+#   sudo systemctl enable --now attribution
+
+[Unit]
+Description=Northward data marking and attribution demonstrator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=attribution
+Group=attribution
+ExecStart=/opt/attribution/attribution \
+    -addr 127.0.0.1:8080 \
+    -root /opt/attribution \
+    -config /etc/attribution/config.yaml \
+    -data /var/lib/attribution \
+    -secure-cookie
+Restart=always
+RestartSec=2
+
+# The process needs to read its own directory and write only the issuance
+# logs. Everything else is off.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+ReadWritePaths=/var/lib/attribution
+
+[Install]
+WantedBy=multi-user.target

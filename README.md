@@ -89,9 +89,34 @@ docker build -t attribution .
 docker run -p 8080:8080 -v ./config.yaml:/app/config.yaml:ro attribution
 ```
 
-or `docker compose up`, which mounts the same file. Set `SECURE_COOKIE=1` when a
-TLS-terminating proxy sits in front, so the session cookie is only sent over
-HTTPS. The image is about 24 MB and runs as a non-root user.
+or `docker compose up`, which mounts the same file, keeps the issuance logs in a
+named volume, binds the port to loopback and sets the session cookie to
+HTTPS-only. The image is about 24 MB and runs as a non-root user.
+
+### Without Docker
+
+One static binary, three web directories and a config file, so a plain systemd
+service is enough. `deploy/attribution.service` is a working unit with the setup
+steps in its header.
+
+```sh
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" .
+rsync -a attribution custodial/web provenance/web common/web samples \
+    ec2:/opt/attribution/
+```
+
+Use `GOARCH=arm64` on Graviton. The binary needs to be told where the frontends
+live, either by running from the repository root or with `-root`, which is what
+the unit does. `-config` and `-data` take the file and the log directory, and
+`-secure-cookie` sets the cookie to HTTPS-only.
+
+Behind nginx, `deploy/nginx.conf` is a working server block for certbot to
+extend. Two settings in it matter. `client_max_body_size 25m`, because nginx
+otherwise rejects uploads at 1 MB before the application sees them. And
+`X-Forwarded-For $remote_addr` rather than the usual appending form, because the
+application reads the first value for its sign-in throttle and action log, so an
+appended header would let a caller put any address they liked in front of their
+own.
 
 ## Layout
 

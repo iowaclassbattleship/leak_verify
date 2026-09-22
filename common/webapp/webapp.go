@@ -130,5 +130,5 @@ func WebDir(candidates ...string) (string, error) {
 			return dir, nil
 		}
 	}
-	return "", fmt.Errorf("no frontend found in %s (run from the repository root, or pass -web)", strings.Join(candidates, " or "))
+	return "", fmt.Errorf("no frontend found in %s (run from the repository root, or pass -root)", strings.Join(candidates, " or "))
 }
