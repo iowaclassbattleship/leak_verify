@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +32,7 @@ type tabState struct {
 const sampleTableSource = "Sample account data"
 
 func (s *Server) reset(t *tabular.Table, source, fileBase string) {
+	s.tables[source] = t
 	schema, cols := tabular.DetectSchema(t)
 	if prev := s.loggedSchema(source); prev != nil && prev.Validate(t) == nil {
 		schema = *prev // copies of this table were issued under these roles
@@ -152,6 +154,7 @@ func (s *Server) stateHandler(w http.ResponseWriter, r *http.Request) {
 		"viewer":   viewer,
 		"log":      log,
 		"hidden":   hidden,
+		"held":     s.heldSources(),
 	})
 }
 
@@ -179,7 +182,7 @@ func (s *Server) marks() []map[string]string {
 func (s *Server) source(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("sample") == "1" {
 		s.mu.Lock()
-		s.reset(tabular.Generate(2000, uint64(time.Now().UnixNano())), sampleTableSource, "accounts")
+		s.reset(s.sampleTable(), sampleTableSource, "accounts")
 		s.mu.Unlock()
 		s.stateHandler(w, r)
 		return
@@ -229,6 +232,12 @@ func (s *Server) schema(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if n := len(s.issued()); n > 0 {
+		// Every copy of a table is read back under one set of roles. Changing
+		// them now would make the copies already handed out unverifiable.
+		webapp.WriteErr(w, http.StatusConflict, fmt.Sprintf("the column roles are fixed, because %s issued under them. Recall %s to change the roles.", plural(n, "copy was", "copies were"), map[bool]string{true: "it", false: "them"}[n == 1]))
+		return
+	}
 	if err := req.Validate(s.tab.reg.Master); err != nil {
 		webapp.WriteErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -468,9 +477,11 @@ func (s *Server) bundle(w http.ResponseWriter, r *http.Request) {
 	webapp.SendFile(w, "application/zip", base+"_marked-copies.zip", buf.Bytes(), false)
 }
 
-// detect checks a recovered file against the issuance log. The Mark tab's
-// unassigned copy stands in only while nothing has been issued, so a file is
-// never traced to a mark that nobody received.
+// detect checks a recovered file against every copy on the issuance log,
+// whichever table the Mark tab has loaded. Each table the copies were issued
+// from is regenerated with the roles they were issued under, and the
+// strongest reading wins. The Mark tab's unassigned copy is never a
+// candidate: nobody received it.
 func (s *Server) detect(w http.ResponseWriter, r *http.Request) {
 	data, name, ok := webapp.ReadUpload(w, r)
 	if !ok {
@@ -483,21 +494,29 @@ func (s *Server) detect(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	reg := *s.tab.reg
-	against := "issued"
-	if issued := s.issued(); len(issued) > 0 {
-		reg.Issued = issued
-	} else if len(reg.Issued) > 0 {
-		against = "unassigned"
-	} else {
-		webapp.WriteErr(w, http.StatusBadRequest, "nothing has been marked yet: choose measures on the Mark tab first")
+	regs, missing := s.registries()
+	if len(regs) == 0 {
+		msg := "nothing has been issued yet: issue a copy on the Mark tab first"
+		if len(missing) > 0 {
+			msg = fmt.Sprintf("the copies on the log were issued from %s, which is not loaded in this session. Load it on the Mark tab, then verify again", joinAnd(missing))
+		}
+		webapp.WriteErr(w, http.StatusBadRequest, msg)
 		return
 	}
-	rep := reg.Detect(t)
+	var best *tableReading
+	for _, tr := range regs {
+		rd := &tableReading{source: tr.source, report: tr.reg.Detect(t), reg: tr.reg}
+		if best == nil || rd.better(best) {
+			best = rd
+		}
+	}
+	rep := best.report
 	who := map[string]any{}
 	add := func(mark string) {
-		if is := s.issuance(mark); is != nil && is.MarkID != previewID {
-			who[mark] = map[string]any{"recipient": is.Recipient, "purpose": is.Org, "issuedAt": is.IssuedAt, "fileName": is.FileName, "unit": is.Unit}
+		for _, is := range best.reg.Issued {
+			if is.Mark == mark {
+				who[mark] = map[string]any{"recipient": is.Recipient, "purpose": is.Org, "issuedAt": is.IssuedAt, "fileName": is.FileName, "unit": is.Unit}
+			}
 		}
 	}
 	add(rep.Verdict.MarkID)
@@ -506,8 +525,93 @@ func (s *Server) detect(w http.ResponseWriter, r *http.Request) {
 	}
 	webapp.WriteJSON(w, map[string]any{
 		"name": name, "rows": len(t.Rows), "columns": t.Columns, "size": len(data),
-		"preview": t.Preview(6), "report": rep, "issuances": who, "against": against,
+		"preview": t.Preview(6), "report": rep, "issuances": who,
+		"table": best.source, "tables": len(regs), "unavailable": missing,
 	})
+}
+
+type sourceRegistry struct {
+	source string
+	reg    *tabular.Registry
+}
+
+// registries builds one registry per table that has issued copies and is
+// held in this session. missing lists the tables with copies on the log that
+// are not loaded, so they cannot be regenerated.
+func (s *Server) registries() (out []sourceRegistry, missing []string) {
+	var order []string
+	bySource := map[string][]loggedIssuance{}
+	for _, e := range s.logged {
+		if _, seen := bySource[e.Source]; !seen {
+			order = append(order, e.Source)
+		}
+		bySource[e.Source] = append(bySource[e.Source], e)
+	}
+	for _, src := range order {
+		if src == s.tab.source {
+			reg := *s.tab.reg
+			reg.Issued = s.issued()
+			if len(reg.Issued) > 0 {
+				out = append(out, sourceRegistry{src, &reg})
+			}
+			continue
+		}
+		master := s.tables[src]
+		if master == nil {
+			missing = append(missing, src)
+			continue
+		}
+		schema, _ := tabular.DetectSchema(master)
+		if prev := s.loggedSchema(src); prev != nil && prev.Validate(master) == nil {
+			schema = *prev
+		}
+		reg := &tabular.Registry{Key: s.key, Master: master, Schema: schema, Copies: map[uint16]*tabular.Table{}}
+		for _, e := range bySource[src] {
+			copyT, iss := tabular.MarkCopy(s.key, master, schema, e.MarkID, e.Techniques)
+			iss.Recipient, iss.Org, iss.Unit, iss.IssuedAt, iss.FileName = e.Recipient, e.Org, e.Unit, e.IssuedAt, e.FileName
+			reg.Issued = append(reg.Issued, iss)
+			reg.Copies[e.MarkID] = copyT
+		}
+		out = append(out, sourceRegistry{src, reg})
+	}
+	return out, missing
+}
+
+// tableReading is a recovered file read against one table's copies.
+type tableReading struct {
+	source string
+	report tabular.Report
+	reg    *tabular.Registry
+}
+
+func (a *tableReading) rank() int {
+	switch v := a.report.Verdict; {
+	case v.Status == "attributed" || v.Status == "merged":
+		return 4
+	case a.report.MatchesSource:
+		return 3
+	case v.Status == "inconclusive":
+		return 2
+	}
+	return 1
+}
+
+// better prefers a stronger verdict, then the table more rows match.
+func (a *tableReading) better(b *tableReading) bool {
+	if a.rank() != b.rank() {
+		return a.rank() > b.rank()
+	}
+	return a.report.ResolvedRows > b.report.ResolvedRows
+}
+
+func joinAnd(xs []string) string {
+	switch len(xs) {
+	case 0:
+		return ""
+	case 1:
+		return xs[0]
+	}
+	return strings.Join(xs[:len(xs)-1], ", ") + " and " + xs[len(xs)-1]
 }
 
 // ---- testing page: leak simulator and robustness matrix ----
@@ -611,4 +715,14 @@ func plural(n int, one, many string) string {
 		return fmt.Sprintf("%d %s", n, one)
 	}
 	return fmt.Sprintf("%d %s", n, many)
+}
+
+// heldSources lists the tables loaded in this session.
+func (s *Server) heldSources() []string {
+	out := make([]string, 0, len(s.tables))
+	for src := range s.tables {
+		out = append(out, src)
+	}
+	sort.Strings(out)
+	return out
 }

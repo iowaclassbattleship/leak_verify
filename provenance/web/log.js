@@ -12,6 +12,12 @@ function unitName(units, id) {
 }
 
 function renderLog(st) {
+  if (!Array.isArray(st.viewers)) {
+    // A page newer than the server: the log needs a server restart.
+    $('#log-scope').textContent = 'The server does not provide an issuance log yet. It is running an older build than this page; restart it after deploying.';
+    $('#log-table').replaceChildren();
+    return;
+  }
   const sel = $('#log-viewer');
   if (!sel.options.length) {
     for (const v of st.viewers) sel.append(el('option', { value: v.id, text: v.name }));

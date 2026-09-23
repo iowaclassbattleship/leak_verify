@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"os"
 	"path"
@@ -54,7 +55,14 @@ type Config struct {
 	ProvenanceWeb string
 	SharedWeb     string
 	SecureCookie  bool
+	Build         string // the commit the binary was built from
 }
+
+// APIVersion is the version of the JSON API the frontends expect. Raise it
+// whenever a frontend starts to depend on something the server did not send
+// before, and raise apiVersion in common/web/session.js with it: a page that
+// finds an older server says so instead of failing in odd ways.
+const APIVersion = 2
 
 type App struct {
 	cfg Config
@@ -274,7 +282,7 @@ func (a *App) Handler() http.Handler {
 			webapp.WriteErr(w, http.StatusUnauthorized, "signed out")
 			return
 		}
-		webapp.WriteJSON(w, map[string]any{"user": s.user})
+		webapp.WriteJSON(w, map[string]any{"user": s.user, "api": APIVersion, "build": a.cfg.Build})
 	})
 
 	who := func(r *http.Request) string {
@@ -290,7 +298,9 @@ func (a *App) Handler() http.Handler {
 	mux.Handle("GET /{$}", a.requirePage(func(w http.ResponseWriter, r *http.Request, _ *Session) {
 		http.ServeFile(w, r, path.Join(a.cfg.SharedWeb, "home.html"))
 	}))
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) })
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "ok\nbuild %s\napi %d\n", a.cfg.Build, APIVersion)
+	})
 
 	return mux
 }

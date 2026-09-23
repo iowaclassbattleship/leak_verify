@@ -1,6 +1,11 @@
 services:
   attribution:
-    build: .
+    build:
+      context: .
+      # Stamps the binary with the commit, shown at /healthz and on the pages:
+      #   BUILD=$(git rev-parse --short HEAD) docker compose up --build
+      args:
+        BUILD: ${BUILD:-}
     ports:
       # Bound to loopback: nginx is the only way in, even if the security
       # group is ever opened wider than 80 and 443.

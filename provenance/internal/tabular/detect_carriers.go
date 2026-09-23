@@ -40,55 +40,72 @@ func (r *Registry) detectAllocation(leaked *Table, pks []string) Result {
 		return res
 	}
 
+	// A copy never holds a row of its own withheld slice. Any other file
+	// holds each of them with the probability that it holds a source row at
+	// all, so a file missing a whole slice by chance has probability
+	// (1-coverage)^slice. Measured against each copy's own slice, not an
+	// average: a copy whose slice happens to be small proves little.
+	coverage := math.Min(1, float64(len(seen))/float64(max(1, len(r.Master.Rows))))
 	type score struct {
-		id   uint16
-		hits int
+		id          uint16
+		hits, slice int
+		chance      float64
 	}
 	var scores []score
-	expect := 0.0
 	for _, is := range r.Issued {
 		if !is.Techniques.Allocate {
 			continue
 		}
 		rate := is.Techniques.Params.WithDefaults().AllocRate
-		expect = float64(len(seen)) / float64(rate)
-		hits := 0
-		for pk := range seen {
+		sc := score{id: is.MarkID}
+		for _, row := range r.Master.Rows {
+			pk := r.Schema.rowKey(r.Master, row)
 			if withheld(r.Key, pk, is.MarkID, rate) {
-				hits++
+				sc.slice++
+				if seen[pk] {
+					sc.hits++
+				}
 			}
 		}
-		scores = append(scores, score{is.MarkID, hits})
+		sc.chance = math.Pow(1-coverage, float64(sc.slice))
+		scores = append(scores, sc)
 	}
 	if len(scores) == 0 {
 		res.Status = "absent"
 		res.Detail = "No recipient was issued a withheld slice."
 		return res
 	}
-	// Fewer than three expected hits cannot separate one copy from another.
-	if expect < 3 {
-		res.Status = "inconclusive"
-		res.Detail = sayf("Only %d rows matched, so a wrong copy would be expected to show about %.1f withheld rows. That is too few to tell copies apart.", len(seen), expect)
-		return res
-	}
-	best, second := score{hits: 1 << 30}, score{hits: 1 << 30}
-	for _, s := range scores {
-		if s.hits < best.hits {
-			best, second = s, best
-		} else if s.hits < second.hits {
-			second = s
+	var clean []score
+	for _, sc := range scores {
+		if sc.hits == 0 && sc.slice > 0 {
+			clean = append(clean, sc)
 		}
 	}
-	res.Detail = sayf("%d of %d matched rows belong to the slice withheld from %s, against about %.0f expected for any other copy.",
-		best.hits, len(seen), codec.FormatID(best.id), expect)
-	if float64(best.hits) < expect/3 && (len(scores) == 1 || second.hits > best.hits) {
-		res.Status = "attributed"
-		res.MarkID = codec.FormatID(best.id)
-		res.Recipient = r.label(best.id)
-		res.Confidence = sayf("%d withheld rows present, %.0f expected if this were another copy", best.hits, expect)
-	} else {
+	switch {
+	case len(clean) == 0:
+		res.Status = "absent"
+		res.Detail = sayf("Every copy's withheld slice is at least partly present in these %d rows, so the file is not any single copy that withheld rows.", len(seen))
+		if coverage >= 0.99 {
+			res.Detail = sayf("All %d source rows are present, including every row withheld from any copy.", len(seen))
+		}
+	case len(clean) > 1:
 		res.Status = "inconclusive"
-		res.Detail += " No copy stands out."
+		res.Detail = sayf("%d copies have no withheld row in these %d rows, so allocation cannot tell them apart.", len(clean), len(seen))
+	default:
+		best := clean[0]
+		p := math.Min(1, best.chance*float64(len(scores)))
+		res.Detail = sayf("None of the %d rows withheld from %s is present, while the file holds %.0f%% of the source.",
+			best.slice, codec.FormatID(best.id), 100*coverage)
+		if p <= codec.MaxFalseProb && r.label(best.id) != "" {
+			res.Status = "attributed"
+			res.MarkID = codec.FormatID(best.id)
+			res.Recipient = r.label(best.id)
+			res.Confidence = codec.FormatProb(p)
+		} else {
+			res.Status = "inconclusive"
+			res.Detail += " With this few rows, another file would miss them this often by chance."
+			res.Confidence = codec.FormatProb(p)
+		}
 	}
 	return res
 }
@@ -333,7 +350,12 @@ func (r *Registry) detectRedaction(leaked *Table, pks []string) Result {
 		}
 	}
 	res.Detail = sayf("%d of %d values carry a valid pseudonym, %d of them issued to %s.", valid, readable, bestN, codec.FormatID(best))
-	if bestN >= 3 && bestN*10 >= valid*6 {
+	if split := r.splitCandidates(counts, valid, res.Name); len(split) > 1 {
+		res.Status, res.Candidates = "inconclusive", split
+		res.Detail += " The pseudonyms name more than one issued copy, which means merged copies."
+		return res
+	}
+	if r.label(best) != "" && bestN >= 3 && bestN*10 >= valid*6 {
 		res.Status = "attributed"
 		res.MarkID = codec.FormatID(best)
 		res.Recipient = r.label(best)

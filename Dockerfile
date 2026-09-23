@@ -4,7 +4,10 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/attribution .
+# .git is not in the build context, so the commit comes in as an argument
+# and is what /healthz and the pages report as the server build.
+ARG BUILD=""
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.stamp=${BUILD}" -o /out/attribution .
 
 # Run
 FROM alpine:3.20

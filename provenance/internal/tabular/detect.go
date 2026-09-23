@@ -149,6 +149,27 @@ func verdict(results []Result, matchesSource bool) Result {
 	return v
 }
 
+// splitCandidates names every issued copy that holds a substantial share of
+// the valid keyed codes a technique read (dummy values, pseudonyms). Each
+// code carries a 1-in-100 check, so dozens of valid codes from two copies is
+// not chance: the file holds rows of both.
+func (r *Registry) splitCandidates(counts map[uint16]int, valid int, technique string) []codec.Support {
+	var out []codec.Support
+	for id, n := range counts {
+		if lbl := r.label(id); lbl != "" && n >= max(3, valid/10) {
+			out = append(out, codec.Support{MarkID: codec.FormatID(id), Recipient: lbl, Layers: []string{technique}, Strength: codec.Attributed.String()})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return counts[markNum(out[i].MarkID)] > counts[markNum(out[j].MarkID)] })
+	return out
+}
+
+func markNum(mark string) uint16 {
+	var id uint16
+	fmt.Sscanf(mark, "MK-%04X", &id)
+	return id
+}
+
 // sourceRows counts the leaked rows identical to a row of the unmarked
 // source, on the columns the file has.
 func (r *Registry) sourceRows(leaked *Table) int {
@@ -606,6 +627,11 @@ func (r *Registry) detectDummy(leaked *Table, pks []string) Result {
 		return res
 	}
 	res.Detail = sayf("%d of %d matched rows carry a valid code, %d of them decode to %s.", valid, readable, bestN, codec.FormatID(best))
+	if split := r.splitCandidates(counts, valid, res.Name); len(split) > 1 {
+		res.Status, res.Candidates = "inconclusive", split
+		res.Detail += " The codes name more than one issued copy, which means merged copies."
+		return res
+	}
 	if lbl := r.label(best); lbl != "" && bestN >= 3 && bestN*10 >= valid*6 {
 		res.Status = "attributed"
 		res.MarkID = codec.FormatID(best)

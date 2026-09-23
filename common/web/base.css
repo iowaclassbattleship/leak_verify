@@ -258,3 +258,9 @@ tbody tr:last-child td { border-bottom: 1px solid var(--rule); }
 .tile-rows span:nth-child(3) { width: 46px; }
 .tile-rows span:nth-child(4) { width: 26px; }
 .tile:hover .tile-rows span { background: var(--paper); }
+
+/* Shown by session.js when the server is older than the page. */
+.stale-server {
+  background: var(--bad); color: var(--paper); padding: 10px 16px; margin: 0 0 16px;
+  font-size: 13px;
+}

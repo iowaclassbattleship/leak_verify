@@ -14,6 +14,13 @@ export function issuedCount() {
   return copiesIssued;
 }
 
+let issuedListener = () => {};
+
+// setIssuedListener is told whenever the number of issued copies changes.
+export function setIssuedListener(fn) {
+  issuedListener = fn;
+}
+
 const unitName = (id) => units.find((u) => u.id === id)?.name || id;
 
 function renderPeople() {
@@ -42,7 +49,10 @@ async function refreshCopies() {
   } catch {
     return;
   }
-  copiesIssued = copies.length;
+  if (copies.length !== copiesIssued) {
+    copiesIssued = copies.length;
+    issuedListener();
+  }
   if (copies.length === 0) {
     box.replaceChildren();
     return;

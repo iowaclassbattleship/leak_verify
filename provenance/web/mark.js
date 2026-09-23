@@ -1,5 +1,5 @@
 import { $, $$, el, api, toast, busy, apiURL, countNoun } from './common.js';
-import { initIssue, setIssueVisible, issuedCount } from './issue.js';
+import { initIssue, setIssueVisible, issuedCount, setIssuedListener } from './issue.js';
 
 // The marking tab shows the head of the loaded table and re-renders it every
 // time a measure is toggled, so the cost of each measure is visible rather
@@ -88,13 +88,17 @@ function roleCell(col) {
   const role = currentRole(col.name);
   const options = rolesFor(col);
   if (role === 'match' && !options.includes('match')) options.push('match');
-  const select = el('select', { class: 'role-select', 'aria-label': `Role of ${col.name}` },
+  const locked = issuedCount() > 0;
+  const select = el('select', {
+    class: 'role-select', 'aria-label': `Role of ${col.name}`, disabled: locked,
+    title: locked ? 'Fixed while copies issued under these roles are out' : null,
+  },
     options.map((r) => el('option', { value: r, text: ROLE_LABEL[r], selected: r === role })));
   select.addEventListener('change', () => setRole(col, select.value));
   let precision = null;
   if (role === 'tolerant') {
     const field = state.schema.tolerant.find((f) => f.name === col.name);
-    const p = el('select', { class: 'role-select', title: 'How much a value may change', 'aria-label': `How much ${col.name} may change` },
+    const p = el('select', { class: 'role-select', disabled: locked, title: 'How much a value may change', 'aria-label': `How much ${col.name} may change` },
       Array.from({ length: col.decimals }, (_, i) => i + 1).map((d) =>
         el('option', { value: d, text: precisionLabel(col, d), selected: d === field.decimals })));
     p.addEventListener('change', () => setRole(col, 'tolerant', Number(p.value)));
@@ -106,10 +110,6 @@ function roleCell(col) {
 async function setRole(col, role, decimals) {
   const sc = structuredClone(state.schema);
   const name = col.name;
-  if (issuedCount() > 0 && !confirm('Copies have already been issued from this table with the current roles. Changing a role re-marks every copy from now on, and the copies already handed out will no longer verify.\n\nChange it anyway?')) {
-    renderTableFromLast();
-    return;
-  }
   if (sc.key === name) sc.key = '';
   sc.tolerant = (sc.tolerant || []).filter((f) => f.name !== name);
   sc.redact = (sc.redact || []).filter((n) => n !== name);
@@ -161,7 +161,25 @@ async function refresh() {
   }
 }
 
+// renderRolesNote explains why the role selectors are fixed. Every copy of a
+// table is read back under one set of roles, so they cannot change while
+// copies issued under them are out.
+function renderRolesNote() {
+  const n = issuedCount();
+  const note = $('#mark-roles-note');
+  note.hidden = n === 0;
+  note.textContent = n === 0 ? '' : `Column roles are fixed: ${n === 1 ? '1 copy was' : `${n.toLocaleString('en')} copies were`} issued under them, and every copy of a table is checked with the same roles. Recall the ${n === 1 ? 'copy' : 'copies'} below to change them.`;
+}
+
+// onIssuedChange re-renders the header selectors when copies are issued or
+// recalled, since that locks or unlocks the roles.
+export function onIssuedChange() {
+  renderRolesNote();
+  renderTableFromLast();
+}
+
 function renderTable(box, preview) {
+  renderRolesNote();
   const byName = Object.fromEntries(state.columns.map((c) => [c.name, c]));
   const head = el('tr', {}, preview.columns.map((c) =>
     el('th', { class: c.added ? 'added' : null },
@@ -231,6 +249,7 @@ function showFormat(fmt) {
 async function load(fn) {
   const error = $('#mark-error');
   error.hidden = true;
+  lastPreview = null;
   try {
     await fn();
     state = await api('/api/state');
@@ -253,6 +272,7 @@ function loadFile(file) {
 
 export function initMark() {
   initIssue(measures);
+  setIssuedListener(onIssuedChange);
   setLoaded(false);
   for (const input of $$('#mark-measures input')) input.addEventListener('change', refresh);
   $('#mark-example').addEventListener('click', (e) => {

@@ -60,12 +60,14 @@ function renderReport(name, size, res) {
       summary = [el('p', { class: 'small dim', text: v.detail })];
   }
 
+  const from = res.table ? `Matched against the copies of ${res.table}.` : '';
   return el('div', { class: 'result ' + v.status },
     el('div', { class: 'head' },
       el('b', { text: name }),
       el('span', { text: `${countNoun(rep.rows, 'row', 'rows')}, ${countNoun(rep.columns.length, 'column', 'columns')}, ${Math.max(1, Math.round(size / 1024)).toLocaleString('en')} KB` })),
     el('div', { class: 'verdict', text: headline }),
     ...summary,
+    from && (v.status === 'attributed' || v.status === 'merged') ? el('p', { class: 'small dim', text: from }) : null,
     el('p', { class: 'small dim', text: `${rep.resolvedRows.toLocaleString('en')} of ${countNoun(rep.rows, 'row', 'rows')} could be matched back to a source row.` }),
     el('div', { class: 'tablewrap' },
       el('table', {},
@@ -97,17 +99,30 @@ async function check(file) {
   }
 }
 
+// showVerify describes what a file will be checked against: every copy on
+// the issuance log, whichever table the Mark tab has loaded, and says which
+// tables cannot be checked because they are not loaded in this session.
 export async function showVerify() {
-  // Read-only: /api/preview would re-register the copy and wipe the marking.
   try {
     const st = await api('/api/state');
-    const issued = (st.issued || []).filter((i) => i.recipient !== 'the copy from the Mark tab');
-    const used = new Set(issued.flatMap((i) => Object.keys(MEASURE).filter((k) => i.techniques?.[k])));
+    const log = st.log || [];
+    const held = new Set(st.held || []);
+    const tables = [...new Set(log.map((e) => e.source))];
+    const checkable = tables.filter((t) => held.has(t));
+    const missing = tables.filter((t) => !held.has(t));
+    const copies = log.filter((e) => held.has(e.source)).length;
+    const used = new Set(log.flatMap((e) => Object.keys(MEASURE).filter((k) => e.techniques?.[k])));
     const measures = Object.keys(MEASURE).filter((k) => used.has(k)).map((k) => MEASURE[k]);
-    const table = `${st.source}, ${countNoun(st.rows, 'row', 'rows')}`;
-    $('#verify-context').textContent = issued.length
-      ? `Checking against ${countNoun(issued.length, 'copy', 'copies')} of ${table}, marked with ${measures.join(', ') || 'no measures'}.`
-      : `Nothing issued from ${table} yet, so a file is checked against the unassigned copy the Mark tab is set up to produce.`;
+    const parts = [];
+    if (!log.length) {
+      parts.push('Nothing has been issued yet. Issue copies on the Mark tab, then check a recovered file here.');
+    } else if (copies) {
+      parts.push(`Checking against the issuance log: ${countNoun(copies, 'copy', 'copies')} of ${checkable.join(', ')}, marked with ${measures.join(', ') || 'no measures'}.`);
+    }
+    if (missing.length) {
+      parts.push(`${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} not loaded in this session, so ${missing.length === 1 ? 'its copies' : 'their copies'} cannot be checked. Load ${missing.length === 1 ? 'it' : 'them'} on the Mark tab first.`);
+    }
+    $('#verify-context').textContent = parts.join(' ');
   } catch (err) {
     $('#verify-context').textContent = err.message;
   }

@@ -55,9 +55,13 @@ browser refresh.
   Custodial's log is: a viewer sees their own group, and only Data Governance
   sees the mark IDs.
 
-Until something is issued, Verify checks against the unassigned copy the Mark
-tab is configured to produce, so the mark-then-verify loop works on its own.
-Once copies are issued, that unassigned mark is never a candidate. Every
+Verify reads a file against every issued copy of every table loaded in the
+session, whichever table the Mark tab shows: each table's copies are
+regenerated under the roles they were issued with, and the strongest reading
+wins. The Mark tab's unassigned preview copy is never a candidate, since nobody
+received it; with nothing issued, Verify says so. A table with copies on the
+log that is not loaded (an upload, after a restart) is named, so it can be
+loaded again; the example table is the same every time it is loaded. Every
 carrier is read back, each by its own stage:
 exact fingerprint, canary rows and allocation by exact matching, and low-order
 bits, noise, free choices, tuple ordering, redaction and the dummy column by
@@ -125,9 +129,13 @@ the dummy column).
 - A key column with no gaps (1000 to 1499, every value used) leaves canaries
   no room inside its range, so they take keys past the top and show in a copy
   sorted by key. The Mark tab says so when it happens.
-- The detector reads every copy of a table under one set of column roles.
-  Changing a role after issuing means the copies already handed out no longer
-  verify, so the app asks first. The roles are stored with the log, so a
-  restart does not change them.
+- The detector reads every copy of a table under one set of column roles, so
+  the roles are fixed once a copy is issued (the server refuses a change, and
+  the Mark tab says why). Recalling the copies unlocks them. The roles are
+  stored with the log, so a restart does not change them.
+- Allocation names a copy only when none of the rows withheld from it are
+  present and a file covering this much of the source would miss them all by
+  chance at most once in 1,000 times. A small sample of a small table
+  therefore rarely attributes by allocation alone.
 - Covert marking is a technical property. Whether recipients are told is a legal
   and policy decision.

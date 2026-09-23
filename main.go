@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"time"
 
 	"attribution/common/store"
@@ -31,6 +32,7 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("%d users loaded from %s", len(settings.Users), *configPath)
+	log.Printf("build %s, API version %d", build(), app.APIVersion)
 
 	cfg := app.Config{
 		Users:         settings.Users,
@@ -41,6 +43,7 @@ func main() {
 		ProvenanceWeb: mustDir(filepath.Join(*root, "provenance/web"), "provenance/web", "../provenance/web"),
 		SharedWeb:     webapp.SharedDir(filepath.Join(*root, "common/web"), "common/web", "../common/web"),
 		SecureCookie:  *secure,
+		Build:         build(),
 	}
 	if cfg.SharedWeb == "" {
 		log.Fatal("cannot find common/web; run from the repository root")
@@ -68,4 +71,50 @@ func mustDir(candidates ...string) string {
 		log.Fatal(err)
 	}
 	return dir
+}
+
+// stamp is set at link time (-ldflags "-X main.stamp=...") where the build
+// has no git metadata to embed.
+var stamp string
+
+// build names the source the binary was compiled from: the commit, marked
+// "+dirty" when the working tree had changes. The frontends are read from
+// disk at every request, so they can be newer than the binary; this is what
+// tells the two apart.
+//
+// A Docker build has no .git to read, so it passes the commit in instead:
+//
+//	docker build --build-arg BUILD=$(git rev-parse --short HEAD) .
+func build() string {
+	if stamp != "" {
+		return stamp
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "unknown"
+	}
+	rev, dirty, at := "", false, ""
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.modified":
+			dirty = s.Value == "true"
+		case "vcs.time":
+			at = s.Value
+		}
+	}
+	if rev == "" {
+		return "unknown (built outside a git checkout)"
+	}
+	if len(rev) > 12 {
+		rev = rev[:12]
+	}
+	if dirty {
+		rev += "+dirty"
+	}
+	if at != "" {
+		rev += " " + at
+	}
+	return rev
 }

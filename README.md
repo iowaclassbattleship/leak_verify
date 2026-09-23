@@ -105,6 +105,22 @@ rsync -a attribution custodial/web provenance/web common/web samples \
     ec2:/opt/attribution/
 ```
 
+Then restart the service. The frontends are read from disk at every request, so
+copying them updates the pages at once, but the server only changes when the
+binary is replaced **and** the process restarted:
+
+```sh
+ssh ec2 sudo systemctl restart attribution
+curl -s https://host/healthz        # ok / build <commit> / api <version>
+```
+
+`/healthz` names the commit the running binary was built from (`+dirty` when
+the tree had uncommitted changes), and every page shows a red banner when it is
+newer than the server it talks to. A new page against an old server otherwise
+fails in confusing ways, which is what happened in QA round 2. Docker builds
+have no `.git`, so pass the commit in:
+`docker build --build-arg BUILD=$(git rev-parse --short HEAD) .`
+
 Use `GOARCH=arm64` on Graviton. The binary needs to be told where the frontends
 live, either by running from the repository root or with `-root`, which is what
 the unit does. `-config` and `-data` take the file and the log directory, and

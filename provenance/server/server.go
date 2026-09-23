@@ -24,18 +24,26 @@ type Server struct {
 	mu  sync.Mutex
 	key codec.Key
 	tab *tabState
+	// tables holds every table loaded in this session by source, so Verify
+	// can check a file against the copies of any of them, not only the one
+	// on the Mark tab. The sample comes back identical on every load.
+	tables map[string]*tabular.Table
 }
 
 // New builds one user's instance. key is derived per user so it survives a
 // restart, and st holds their issuance log between processes.
 func New(key codec.Key, user string, st *store.Store) *Server {
-	s := &Server{key: key, user: user, store: st}
+	s := &Server{key: key, user: user, store: st, tables: map[string]*tabular.Table{}}
 	s.loadLog()
-	// Seeded from the user's key rather than the clock, so the sample table
-	// comes back identical after a restart and copies issued from it still
-	// verify. Each user still gets their own table.
-	s.reset(tabular.Generate(2000, binary.BigEndian.Uint64(key.Sum("sample-table"))), sampleTableSource, "accounts")
+	s.reset(s.sampleTable(), sampleTableSource, "accounts")
 	return s
+}
+
+// sampleTable is seeded from the user's key rather than the clock, so it is
+// the same table every time it is loaded, and copies issued from it verify
+// after a restart.
+func (s *Server) sampleTable() *tabular.Table {
+	return tabular.Generate(2000, binary.BigEndian.Uint64(s.key.Sum("sample-table")))
 }
 
 func (s *Server) Handler(web fs.FS, shared string) http.Handler {
