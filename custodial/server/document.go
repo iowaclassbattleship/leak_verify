@@ -31,7 +31,7 @@ var units = []Unit{
 	{"exec", "Executive Committee", "board"},
 	{"fin", "Finance", "exec"},
 	{"legal", "Legal", "exec"},
-	{"ext", "External advisers", "legal"},
+	{"ext", "External Advisers", "legal"},
 }
 
 type Viewer struct {
@@ -94,6 +94,7 @@ type docIssuance struct {
 	SizeBytes int             `json:"sizeBytes"`
 	FileName  string          `json:"fileName"`
 	Source    string          `json:"source"`
+	Document  string          `json:"document"`           // the file or sample the copy was made from
 	Restored  bool            `json:"restored,omitempty"` // issued before a restart, bytes gone
 }
 
@@ -110,10 +111,14 @@ type docState struct {
 	fileBase string // download name stem, from the uploaded file name
 	ext      string
 	title    string
+	name     string // what the log calls the document: the uploaded file name, or the sample
 	issued   []*docIssuance
 }
 
-const sampleSource = "Built-in sample briefing"
+const (
+	sampleSource = "Built-in sample briefing"
+	sampleName   = "Project Halcyon board briefing (sample)"
+)
 
 // keptIssued carries the issuance log across a change of source. The log
 // belongs to the user, not to whichever document happens to be loaded.
@@ -125,16 +130,17 @@ func (s *Server) keptIssued() []*docIssuance {
 }
 
 func (s *Server) resetDocument(m *document.Master, fileBase string) {
+	s.masters[m.Source] = m
 	s.doc = &docState{master: m, kind: "pdf", source: m.Source, warnings: m.Warnings,
-		fileBase: fileBase, ext: ".pdf", issued: s.keptIssued()}
+		fileBase: fileBase, ext: ".pdf", issued: s.keptIssued(), name: sampleName}
 }
 
 func (s *Server) resetOffice(f *office.File, name, source, fileBase string) {
 	st := &docState{office: f, kind: string(f.Kind), source: source, fileBase: fileBase,
-		ext: "." + string(f.Kind), title: name, issued: s.keptIssued()}
+		ext: "." + string(f.Kind), title: name, name: name, issued: s.keptIssued()}
 	stats := f.StatsWithKey(s.key)
 	if stats.SpacingBits < codec.CodeLen {
-		st.warnings = append(st.warnings, fmt.Sprintf("The spacing mark reaches only %d of %d bits in this file, so it can support the other layers but not identify a recipient on its own.", stats.SpacingBits, codec.CodeLen))
+		st.warnings = append(st.warnings, fmt.Sprintf("The spacing mark reaches only %d of %d bits in this file. It still names a recipient when it reads back without errors, but a result from spacing alone is reported as weak evidence.", stats.SpacingBits, codec.CodeLen))
 	}
 	if stats.TextBits < codec.CodeLen {
 		st.warnings = append(st.warnings, fmt.Sprintf("The invisible-character mark reaches only %d of %d bits, because the text is short or repetitive.", stats.TextBits, codec.CodeLen))
@@ -162,7 +168,7 @@ var officeLayers = []layerSpec{
 	{"background", "Background watermark", "Faint texture behind the page. Survives editing and export to PDF.", false, true},
 	{"customxml", "Custom XML part", "A hidden data part. Survives any edit, removed by the inspector.", false, true},
 	{"spacing", "Spacing", "Character spacing per word. Lost when runs are retyped.", false, true},
-	{"text", "Invisible characters", "A zero-width character after some words. The only layer that survives copy and paste.", false, false},
+	{"text", "Invisible characters", "A zero-width character after some words. The only layer that survives copy and paste. Off by default because it changes the text itself: search, compare and some editors can show it.", false, false},
 	{"metadata", "Metadata", "A document property. The inspector removes it.", true, true},
 }
 
@@ -176,11 +182,20 @@ func (s *Server) layers() []layerSpec {
 // fileStem turns free text into a conservative file-name fragment.
 func fileStem(text string) string { return webapp.FileStem(document.Normalize(text), "document") }
 
-func (s *Server) docIssued() []document.Issued {
+// isPDF tells the two pipelines' issuances apart in the shared log.
+func (is *docIssuance) isPDF() bool { return strings.EqualFold(filepath.Ext(is.FileName), ".pdf") }
+
+// docIssued lists the PDF issuances as candidates. The layout layer is only
+// comparable against the master it was typeset from, so it is offered only
+// for copies of source.
+func (s *Server) docIssued(source string) []document.Issued {
 	var out []document.Issued
 	for _, is := range s.doc.issued {
+		if !is.isPDF() {
+			continue
+		}
 		out = append(out, document.Issued{ID: is.id, Label: is.label(), Layers: document.Layers{
-			Layout: is.Layers["layout"], Spectral: is.Layers["spectral"],
+			Layout: is.Layers["layout"] && is.Source == source, Spectral: is.Layers["spectral"],
 			Object: is.Layers["object"], Metadata: is.Layers["metadata"],
 		}})
 	}
@@ -190,6 +205,9 @@ func (s *Server) docIssued() []document.Issued {
 func (s *Server) officeIssued() []office.Issued {
 	var out []office.Issued
 	for _, is := range s.doc.issued {
+		if is.isPDF() {
+			continue
+		}
 		out = append(out, office.Issued{ID: is.id, Label: is.label(), Tag: is.tag, Layers: office.Layers{
 			Spacing: is.Layers["spacing"], Text: is.Layers["text"], Metadata: is.Layers["metadata"],
 			CustomXML: is.Layers["customxml"], Background: is.Layers["background"],
@@ -303,8 +321,8 @@ func (s *Server) docSource(w http.ResponseWriter, r *http.Request) {
 			webapp.WriteErr(w, http.StatusBadRequest, fmt.Sprintf("%s: %v", name, err))
 			return
 		}
-		if f.Stats().Words < 20 {
-			webapp.WriteErr(w, http.StatusBadRequest, "this file holds too little text to carry a mark")
+		if n := f.Stats().Words; n < 20 {
+			webapp.WriteErr(w, http.StatusUnprocessableEntity, fmt.Sprintf("%s holds only %s of text, and a mark needs at least 20", name, plural(n, "word", "words")))
 			return
 		}
 		s.mu.Lock()
@@ -314,14 +332,18 @@ func (s *Server) docSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	doc, source, warnings := extractDocument(data, name)
+	doc, source, warnings, err := extractDocument(data, name)
+	if err != nil {
+		// Never fall back to the sample: tagging a different document than
+		// the one the user chose is worse than refusing.
+		webapp.WriteErr(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
 	m := s.engine.NewMaster(doc, source)
 	m.Warnings = append(warnings, m.Warnings...)
-	if source == sampleSource {
-		base = "Project-Halcyon-Board-Briefing"
-	}
 	s.mu.Lock()
 	s.resetDocument(m, base)
+	s.doc.name = name
 	s.mu.Unlock()
 	s.docStateHandler(w, r)
 }
@@ -329,24 +351,24 @@ func (s *Server) docSource(w http.ResponseWriter, r *http.Request) {
 // extractDocument pulls text from an uploaded PDF or text file. The demo
 // re-typesets that text; a production system would perturb the original
 // PDF's own content stream in place.
-func extractDocument(data []byte, name string) (document.Doc, string, []string) {
-	fallback := func(why string) (document.Doc, string, []string) {
-		return document.SampleDoc(), sampleSource, []string{why + " The sample document was loaded instead."}
-	}
+func extractDocument(data []byte, name string) (document.Doc, string, []string, error) {
 	isPDF := bytes.HasPrefix(bytes.TrimLeft(data, " \r\n\t"), []byte("%PDF"))
 	if !isPDF {
 		if strings.EqualFold(filepath.Ext(name), ".pdf") {
-			return fallback(fmt.Sprintf("%q is not a PDF.", name))
+			return document.Doc{}, "", nil, fmt.Errorf("%s is not a PDF, although its name ends in .pdf", name)
+		}
+		if !utf8.Valid(data) {
+			return document.Doc{}, "", nil, fmt.Errorf("%s is not a Word, PowerPoint, Excel, PDF or plain-text file", name)
 		}
 		doc := document.DocFromText(string(data))
 		if len(doc.Paragraphs) == 0 {
-			return fallback("The file is empty.")
+			return document.Doc{}, "", nil, fmt.Errorf("%s is empty", name)
 		}
-		return doc, name, nil
+		return doc, name, nil, nil
 	}
 	f, err := document.ParsePDF(data)
 	if err != nil {
-		return fallback(fmt.Sprintf("Could not read %q: %v.", name, err))
+		return document.Doc{}, "", nil, fmt.Errorf("could not read %s: %v", name, err)
 	}
 	var lines []document.ExtractedLine
 	for i := range f.Pages {
@@ -356,22 +378,17 @@ func extractDocument(data []byte, name string) (document.Doc, string, []string) 
 	all := doc.Title + " " + strings.Join(doc.Paragraphs, " ")
 	words := len(strings.Fields(all))
 	if words < 40 {
-		return fallback(fmt.Sprintf("Only %d readable words could be extracted from %q. It may be scanned, encrypted or use an unsupported structure.", words, name))
+		return document.Doc{}, "", nil, fmt.Errorf("only %s could be extracted from %s. It may be a scan, encrypted, or hold its text in a form this demo does not read", plural(words, "readable word", "readable words"), name)
 	}
 	if q := document.TextQuality(all); q < 0.85 {
-		return fallback(fmt.Sprintf("Text extracted from %q is unreadable, most likely an unsupported font encoding.", name))
+		return document.Doc{}, "", nil, fmt.Errorf("the text extracted from %s is unreadable, most likely a font encoding this demo does not support", name)
 	}
-	return doc, fmt.Sprintf("%s, %d pages", name, len(f.Pages)),
-		[]string{"Text is extracted and set again, so tagged copies do not keep the original layout."}
+	return doc, fmt.Sprintf("%s, %s", name, plural(len(f.Pages), "page", "pages")),
+		[]string{"Text is extracted and set again, so tagged copies do not keep the original layout."}, nil
 }
 
 // plural renders a count with the matching noun.
-func plural(n int, one, many string) string {
-	if n == 1 {
-		return fmt.Sprintf("%d %s", n, one)
-	}
-	return fmt.Sprintf("%d %s", n, many)
-}
+func plural(n int, one, many string) string { return codec.Plural(n, one, many) }
 
 func (s *Server) docMasterPDF(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
@@ -411,7 +428,7 @@ func (s *Server) docIssue(w http.ResponseWriter, r *http.Request) {
 		id := s.key.AllocateID(ids)
 		is := &docIssuance{id: id, MarkID: codec.FormatID(id), Name: rc.Name, Role: rc.Role, Unit: rc.Unit,
 			IssuedAt: time.Now(), IssuedBy: req.IssuedBy, Layers: req.Layers,
-			FileName: s.doc.fileBase + "_" + fileStem(rc.Name) + s.doc.ext}
+			FileName: s.uniqueFileName(rc)}
 		is.tag = s.engine.MetaTag(id)
 
 		var err error
@@ -439,11 +456,40 @@ func (s *Server) docIssue(w http.ResponseWriter, r *http.Request) {
 		}
 		is.SizeBytes = len(is.data)
 		is.Source = s.doc.source
+		is.Document = s.doc.name
 		s.doc.issued = append(s.doc.issued, is)
 		out = append(out, is)
 	}
+	if len(out) == 0 {
+		webapp.WriteErr(w, http.StatusBadRequest, "every recipient needs a name")
+		return
+	}
 	s.saveLog()
 	webapp.WriteJSON(w, out)
+}
+
+// uniqueFileName names a recipient's copy after the document and the
+// recipient. Two different people with the same name get distinct files, so
+// neither download overwrites the other; the same person issued the same
+// document again keeps their file name.
+func (s *Server) uniqueFileName(rc rosterEntry) string {
+	stem := s.doc.fileBase + "_" + fileStem(rc.Name)
+	for n := 1; ; n++ {
+		name := stem + s.doc.ext
+		if n > 1 {
+			name = fmt.Sprintf("%s_%d%s", stem, n, s.doc.ext)
+		}
+		taken := false
+		for _, is := range s.doc.issued {
+			if strings.EqualFold(is.FileName, name) && (is.Name != rc.Name || is.Role != rc.Role || is.Unit != rc.Unit) {
+				taken = true
+				break
+			}
+		}
+		if !taken {
+			return name
+		}
+	}
 }
 
 // docRecall removes an issuance from the log. The copy already handed over is
@@ -513,7 +559,8 @@ func (s *Server) docBundle(w http.ResponseWriter, r *http.Request) {
 	for _, is := range copies {
 		name := is.FileName
 		if n := used[name]; n > 0 { // same recipient issued twice
-			name = strings.TrimSuffix(name, ".pdf") + fmt.Sprintf("_%d.pdf", n+1)
+			ext := filepath.Ext(name)
+			name = strings.TrimSuffix(name, ext) + fmt.Sprintf("_%d%s", n+1, ext)
 		}
 		used[is.FileName]++
 		f, err := zw.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Store, Modified: is.IssuedAt})
@@ -529,6 +576,9 @@ func (s *Server) docBundle(w http.ResponseWriter, r *http.Request) {
 	webapp.SendFile(w, "application/zip", base+"_tagged-copies.zip", buf.Bytes(), false)
 }
 
+// docDetect checks a recovered file against the whole issuance log, whatever
+// document happens to be loaded for tagging. Each pipeline that could have
+// produced the file reads it, and the strongest report wins.
 func (s *Server) docDetect(w http.ResponseWriter, r *http.Request) {
 	data, name, ok := webapp.ReadUpload(w, r)
 	if !ok {
@@ -536,33 +586,136 @@ func (s *Server) docDetect(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var payload any
+
+	hasOffice, hasPDF := false, false
+	for _, is := range s.doc.issued {
+		if is.isPDF() {
+			hasPDF = true
+		} else {
+			hasOffice = true
+		}
+	}
+	// With nothing issued yet, read the file the way the loaded document's
+	// pipeline would, so the report still explains what it found.
+	if !hasOffice && !hasPDF {
+		hasOffice, hasPDF = s.doc.office != nil, s.doc.office == nil
+	}
+
+	var reports []detection
 	switch {
-	case s.doc.office != nil && office.IsOfficeFile(data):
+	case office.IsOfficeFile(data):
 		rep, err := office.Detect(s.key, data, s.officeIssued(), s.engine.ReadWatermarkTile)
 		if err != nil {
 			webapp.WriteErr(w, http.StatusBadRequest, fmt.Sprintf("%s: %v", name, err))
 			return
 		}
-		payload = rep
-	case s.doc.office != nil && isRendering(data):
-		v, note, ok := s.engine.ReadWatermarkCapture(data)
-		payload = office.DetectCapture(s.key, "Rendering of a page", v, note, ok, s.officeIssued())
-	case s.doc.office != nil:
-		if !utf8.Valid(data) {
-			webapp.WriteErr(w, http.StatusBadRequest, "expected the file, a rendering of it, or text copied out of it")
-			return
+		reports = append(reports, newDetection(rep, rep.Verdict.Status, rep.Verdict.MarkID, rep.Verdict.Decision))
+	case isRendering(data):
+		if hasOffice {
+			v, note, ok := s.engine.ReadWatermarkCapture(data)
+			rep := office.DetectCapture(s.key, "Rendering of a page", v, note, ok, s.officeIssued())
+			reports = append(reports, newDetection(rep, rep.Verdict.Status, rep.Verdict.MarkID, rep.Verdict.Decision))
 		}
-		payload = office.DetectText(s.key, string(data), s.officeIssued())
+		if hasPDF {
+			for _, m := range s.pdfMasters() {
+				rep, err := s.engine.Detect(m, s.docIssued(m.Source), data)
+				if err != nil {
+					webapp.WriteErr(w, http.StatusBadRequest, fmt.Sprintf("%s: %v", name, err))
+					return
+				}
+				reports = append(reports, newDetection(rep, rep.Verdict.Status, rep.Verdict.MarkID, rep.Verdict.Decision))
+			}
+		}
+	case utf8.Valid(data):
+		// Only the invisible characters of an Open XML copy survive as text.
+		// A PDF copy has no text-level layer, and its report says so.
+		if hasOffice {
+			rep := office.DetectText(s.key, string(data), s.officeIssued())
+			reports = append(reports, newDetection(rep, rep.Verdict.Status, rep.Verdict.MarkID, rep.Verdict.Decision))
+		}
+		if hasPDF {
+			rep, _ := s.engine.Detect(s.masterFor(), s.docIssued(""), data)
+			reports = append(reports, newDetection(rep, rep.Verdict.Status, rep.Verdict.MarkID, rep.Verdict.Decision))
+		}
 	default:
-		rep, err := s.engine.Detect(s.doc.master, s.docIssued(), data)
-		if err != nil {
-			webapp.WriteErr(w, http.StatusBadRequest, fmt.Sprintf("%s: %v", name, err))
-			return
-		}
-		payload = rep
+		webapp.WriteErr(w, http.StatusBadRequest, fmt.Sprintf("%s is not a file Custodial reads. Expected Word, PowerPoint, Excel, PDF, PNG, JPEG or plain text.", name))
+		return
 	}
-	webapp.WriteJSON(w, map[string]any{"name": name, "report": payload})
+	best := reports[0]
+	for _, d := range reports[1:] {
+		if d.better(best) {
+			best = d
+		}
+	}
+	out := map[string]any{"name": name, "report": best.report}
+	if is := s.docFind(best.markID); is != nil {
+		out["issuance"] = map[string]any{"fileName": is.FileName, "source": is.Source, "issuedAt": is.IssuedAt, "issuedBy": is.IssuedBy}
+	}
+	out["checked"] = len(s.doc.issued)
+	webapp.WriteJSON(w, out)
+}
+
+// detection is one pipeline's reading of a recovered file.
+type detection struct {
+	report   any
+	status   string
+	markID   string
+	decision *codec.Decision
+}
+
+func newDetection(rep any, status, markID string, d *codec.Decision) detection {
+	return detection{rep, status, markID, d}
+}
+
+var statusRank = map[string]int{"attributed": 3, "conflict": 3, "inconclusive": 2, "absent": 1}
+
+func (d detection) better(o detection) bool {
+	if statusRank[d.status] != statusRank[o.status] {
+		return statusRank[d.status] > statusRank[o.status]
+	}
+	fp := func(x *codec.Decision) float64 {
+		if x == nil {
+			return 1
+		}
+		return x.FalseProb
+	}
+	return fp(d.decision) < fp(o.decision)
+}
+
+// pdfMasters returns the masters that PDF copies in the log were typeset
+// from and that are still held, plus the loaded one. A copy whose master is
+// gone (an upload from before a restart) still reads through every layer
+// except layout.
+func (s *Server) pdfMasters() []*document.Master {
+	seen := map[string]bool{}
+	var out []*document.Master
+	add := func(m *document.Master) {
+		if m != nil && !seen[m.Source] {
+			seen[m.Source] = true
+			out = append(out, m)
+		}
+	}
+	if s.doc.master != nil {
+		add(s.doc.master)
+	}
+	for _, is := range s.doc.issued {
+		if is.isPDF() {
+			add(s.masters[is.Source])
+		}
+	}
+	if len(out) == 0 {
+		add(s.masterFor())
+	}
+	return out
+}
+
+// masterFor returns the loaded master, or the sample when an Open XML file
+// is loaded, for the layers that do not depend on the source.
+func (s *Server) masterFor() *document.Master {
+	if s.doc.master != nil {
+		return s.doc.master
+	}
+	return s.masters[sampleSource]
 }
 
 // isRendering reports whether the upload is a rendering of a page rather than

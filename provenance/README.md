@@ -29,7 +29,8 @@ browser refresh.
   (names replaced by a keyed pseudonym, which the redaction step has to emit
   either way). The last five touch no value that means anything, which is what
   makes them usable on data that must stay analytically intact. Each states its
-  own cost, including where it cannot be applied at all,. Every carrier's rate is tunable through
+  own cost, and a measure the table has no eligible column for is disabled
+  with the reason before anything is issued. Every carrier's rate is tunable through
   `tabular.Params`, which the API accepts but the interface mostly does not
   expose. The one control that is on screen is which decimal place low-order
   bits perturb, because the size of that change is the question a data owner
@@ -39,37 +40,59 @@ browser refresh.
   the impact is counted over the whole copy, so the cost of each measure is a
   number rather than a claim.
 - **Issue to a recipient:** name the people or organisations a copy is going
-  to and issue one marked copy each, with the measures chosen above. The
-  issuance log is what turns a decoded mark back into a name, and it survives a
-  restart.
-- **Verify:** drop a recovered CSV to check it against the copy the Mark tab is
-  configured to produce. Each carrier reports separately, with the stage it
-  belongs to (exact or fuzzy matching) and what it found, then the verdict
-  pools them. A file that was never issued here is reported as such rather than
-  being forced into a match.
+  to, what it is for, and which group they belong to, and issue one marked copy
+  each, with the measures chosen above. The issuance log is what turns a
+  decoded mark back into a name, and it survives a restart, together with the
+  column roles each copy was marked under.
+- **Verify:** drop a recovered CSV to check it against the issued copies. Each
+  carrier reports separately, with the stage it belongs to (exact or fuzzy
+  matching) and what it found, then the verdict pools them and names the
+  recipient, the purpose and the issue date. Rows from several recipients'
+  copies give a *Merged copies detected* headline listing each of them. A file
+  whose rows are all in the unmarked source says so, and a file that was never
+  issued here is reported as such rather than being forced into a match.
+- **Log:** every copy issued from any table, scoped to the viewer the way
+  Custodial's log is: a viewer sees their own group, and only Data Governance
+  sees the mark IDs.
 
-The Mark tab records the copy it is configured to produce, so Verify always has
-something to check against. Every carrier is read back, each by its own stage:
+Until something is issued, Verify checks against the unassigned copy the Mark
+tab is configured to produce, so the mark-then-verify loop works on its own.
+Once copies are issued, that unassigned mark is never a candidate. Every
+carrier is read back, each by its own stage:
 exact fingerprint, canary rows and allocation by exact matching, and low-order
 bits, noise, free choices, tuple ordering, redaction and the dummy column by
 fuzzy matching against the source.
 
 ## Column roles
 
-Roles are detected from the data and confirmed by the user before marking:
+Roles are suggested from the data and shown as a selector in each column
+header of the preview, where the data owner confirms or changes them:
 
 - **Identifier:** a text or whole-number column whose values are distinct. Marks
   are keyed to it, and it matches a recovered row back to the source. With no
   identifier, rows are recognised by the columns marking leaves alone.
-- **Tolerant:** a decimal column with at least three decimals, or a timestamp
-  with fractional seconds. Only these carry low-order-bit marks, so nothing
-  without a stated tolerance is ever altered.
+- **Tolerant:** suggested for a decimal column with at least three decimals, or
+  a timestamp with fractional seconds, and available for any column with a
+  decimal place, together with how much its values may change. Only these
+  carry low-order-bit and noise marks, so nothing without a stated tolerance is
+  ever altered.
+- **Redact:** suggested for text columns whose header names a person or their
+  contact details (name, first name, surname, email, phone, address, and the
+  German and French equivalents) or whose values are email addresses. Dates
+  and numbers are never suggested. Only these are replaced by pseudonyms.
+- **Untouched:** everything else.
+
+CSV files are read in their own dialect: the delimiter (comma, semicolon, tab
+or pipe) is detected, a byte order mark is stripped, and decimal commas as
+Swiss and German Excel writes them (`7951,14`, `1.204,00`) are read as
+numbers. The Mark tab shows what was detected and takes an override. Marked
+copies are written back in the source's dialect.
 
 ## Techniques
 
 | Technique | How it works |
 |---|---|
-| Canary rows | About 0.5% synthetic rows per recipient, built from a real row with fresh identifying values so every column stays plausible. |
+| Canary rows | About 0.5% synthetic rows per recipient, built from a real row. The key is drawn from inside the range and format the key column already uses, avoiding every key in the source; personal columns are recombined from other rows. Seeded per dataset and per recipient, so two tables never share a canary. |
 | Low-order-bit mark | For each tolerant cell, a keyed HMAC of the row's identifying value decides whether the cell carries a bit, which codeword bit, and its mask. The value's last digit holds the bit. |
 | Dummy column | `ref_code` = `BR-<id XOR keyed pad>-<check>`. Easy to drop, and included only as the weakest layer. |
 
@@ -97,6 +120,14 @@ the dummy column).
 - Canary rows are built from real rows with fresh identifying values, so they
   are plausible column by column but may combine attributes that rarely occur
   together.
-- Merged copies from several recipients are flagged, not resolved.
+- Merged copies are detected and every recipient involved is named, but the
+  demo does not work out which rows came from whom beyond the canaries.
+- A key column with no gaps (1000 to 1499, every value used) leaves canaries
+  no room inside its range, so they take keys past the top and show in a copy
+  sorted by key. The Mark tab says so when it happens.
+- The detector reads every copy of a table under one set of column roles.
+  Changing a role after issuing means the copies already handed out no longer
+  verify, so the app asks first. The roles are stored with the log, so a
+  restart does not change them.
 - Covert marking is a technical property. Whether recipients are told is a legal
   and policy decision.

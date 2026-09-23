@@ -27,12 +27,22 @@ export function initTag() {
   $('#tag-add').addEventListener('submit', (e) => {
     e.preventDefault();
     const f = e.target;
-    roster.push({ name: f.name.value.trim(), role: f.role.value.trim() || 'Recipient', unit: f.unit.value, selected: true });
+    const name = f.name.value.trim().replace(/\s+/g, ' ');
+    const role = f.role.value.trim() || 'Recipient';
+    const problem = addProblem(name, role);
+    if (problem) {
+      showAddError(problem);
+      f.name.focus();
+      return;
+    }
+    showAddError('');
+    roster.push({ name, role, unit: f.unit.value, selected: true, custom: true });
     f.name.value = '';
     f.role.value = '';
     renderRecipients();
     f.name.focus();
   });
+  $('#tag-add').name.addEventListener('input', () => showAddError(''));
   $('#doc-layers').addEventListener('change', renderLayerSummary);
   $('#tag-back-2').addEventListener('click', () => go(1));
   $('#tag-create').addEventListener('click', (e) => busy(e.target, createCopies));
@@ -91,6 +101,8 @@ function renderStepper() {
 async function loadDocument(file) {
   if (batch.length && !confirm('Replace the current document? Copies already downloaded stay tied to it.')) return;
   const zone = $('#tag-drop');
+  const error = $('#tag-upload-error');
+  error.hidden = true;
   zone.classList.add('busy');
   setText('#tag-drop-title', file ? `Reading ${file.name}` : 'Loading sample');
   setText('#tag-drop-hint', 'Extracting text and laying out pages');
@@ -108,12 +120,25 @@ async function loadDocument(file) {
     renderStep1();
     renderStepper();
   } catch (err) {
-    toast(err.message, true);
+    // The step stays incomplete: nothing else is loaded in the file's place.
+    docReady = false;
+    reached = 1;
+    renderStep1();
+    renderStepper();
+    error.replaceChildren(
+      el('b', { text: file ? `${file.name} could not be used` : 'The sample could not be loaded' }),
+      el('span', { text: sentence(err.message) + ' Choose another file.' }));
+    error.hidden = false;
   } finally {
     zone.classList.remove('busy');
     setText('#tag-drop-title', 'Drop your document here');
     setText('#tag-drop-hint', 'Word, PowerPoint, Excel or PDF, up to 25 MB');
   }
+}
+
+function sentence(msg) {
+  const s = msg.charAt(0).toUpperCase() + msg.slice(1);
+  return /[.!?]$/.test(s) ? s : s + '.';
 }
 
 function renderStep1() {
@@ -165,13 +190,39 @@ function initials(name) {
   return name.split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0].toUpperCase()).join('');
 }
 
+const sameName = (a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }) === 0;
+
+// addProblem says why a new recipient cannot be added, or returns ''. Two
+// people may share a name, but only with different roles: the copies, the
+// file names and the log have to tell them apart.
+function addProblem(name, role) {
+  if (!name) return 'Enter a name.';
+  const twin = roster.find((r) => sameName(r.name, name));
+  if (!twin) return '';
+  if (sameName(twin.role, role)) {
+    return `${twin.name} (${twin.role}, ${unitName(twin.unit)}) is already in the list. Select that entry, or give a different role if this is another person.`;
+  }
+  return '';
+}
+
+function showAddError(msg) {
+  const box = $('#tag-add-error');
+  box.textContent = msg;
+  box.hidden = !msg;
+}
+
 function renderRecipients() {
   const list = $('#tag-recipients');
   list.replaceChildren(...roster.map((r, i) => el('label', { class: 'recip' + (r.selected ? ' selected' : '') },
     el('input', { type: 'checkbox', checked: r.selected, onchange: (e) => { roster[i].selected = e.target.checked; renderRecipients(); } }),
     el('span', { class: 'avatar', text: initials(r.name) }),
-    el('span', { class: 'who' }, el('b', { text: r.name }), el('small', { class: 'muted', text: r.role })),
-    el('span', { class: 'badge', text: unitName(r.unit) }))));
+    el('span', { class: 'who' }, el('b', { text: r.name }),
+      el('small', { class: 'muted', text: r.role + (roster.some((o) => o !== r && sameName(o.name, r.name)) ? ' · same name as another recipient' : '') })),
+    el('span', { class: 'badge', text: unitName(r.unit) }),
+    r.custom ? el('button', {
+      type: 'button', class: 'recall', title: `Remove ${r.name}`, 'aria-label': `Remove ${r.name}`, text: '\u00d7',
+      onclick: (e) => { e.preventDefault(); roster.splice(i, 1); renderRecipients(); },
+    }) : null)));
   const n = roster.filter((r) => r.selected).length;
   $('#tag-count').textContent = `${n} of ${roster.length} selected`;
   $('#tag-all').checked = n === roster.length;
@@ -195,7 +246,10 @@ function renderLayerSummary() {
 
 async function createCopies() {
   const recipients = roster.filter((r) => r.selected).map(({ name, role, unit }) => ({ name, role, unit }));
-  batch = await api('/api/issue', { json: { recipients, layers: currentLayers() } });
+  const issued = await api('/api/issue', { json: { recipients, layers: currentLayers() } });
+  // Keep the order of the recipient list, whatever order the copies came back in.
+  const pos = (c) => roster.findIndex((r) => r.name === c.name && r.role === c.role && r.unit === c.unit);
+  batch = issued.map((c, i) => [pos(c), i, c]).sort((a, b) => a[0] - b[0] || a[1] - b[1]).map(([, , c]) => c);
   reached = 3;
   go(3);
 }

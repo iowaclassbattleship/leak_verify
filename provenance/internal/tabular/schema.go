@@ -23,6 +23,7 @@ type Schema struct {
 	Key      string   `json:"key"`
 	Match    []string `json:"match"`
 	Tolerant []Field  `json:"tolerant"`
+	Redact   []string `json:"redact"` // personal columns the redaction measure replaces
 	Dummy    string   `json:"dummy"`
 }
 
@@ -30,7 +31,8 @@ type Schema struct {
 // data owner can confirm or correct the suggestion.
 type Column struct {
 	Name      string  `json:"name"`
-	Kind      string  `json:"kind"` // text | integer | decimal | timestamp
+	Kind      string  `json:"kind"`               // text | integer | decimal | timestamp | date
+	Personal  bool    `json:"personal,omitempty"` // reads as a name, contact detail or address
 	Unique    float64 `json:"unique"`
 	Decimals  int     `json:"decimals,omitempty"`
 	Sample    string  `json:"sample"`
@@ -42,7 +44,47 @@ var (
 	reDecimal   = regexp.MustCompile(`^-?\d+\.(\d+)$`)
 	reInteger   = regexp.MustCompile(`^-?\d+$`)
 	reDigits    = regexp.MustCompile(`\d+`)
+	reDate      = regexp.MustCompile(`^(?:\d{4}-\d{1,2}-\d{1,2}(?:[ T]\d{1,2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?)?|\d{1,2}[./-]\d{1,2}[./-]\d{2,4}(?: \d{1,2}:\d{2}(?::\d{2})?)?)$`)
+	reEmail     = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$`)
+	reWordSplit = regexp.MustCompile(`[^\p{L}]+`)
 )
+
+// personalWords are header words that name a person or their contact
+// details. They decide which columns redaction is suggested for; the data
+// owner confirms or changes that before anything is marked.
+var personalWords = map[string]bool{
+	"name": true, "names": true, "firstname": true, "lastname": true, "surname": true, "fullname": true,
+	"first": true, "last": true, "given": true, "family": true, "forename": true, "middle": true,
+	"vorname": true, "nachname": true, "prenom": true, "prénom": true, "nom": true, "cognome": true, "nome": true,
+	"email": true, "mail": true, "phone": true, "telephone": true, "tel": true, "mobile": true, "telefon": true,
+	"handy": true, "natel": true, "address": true, "adresse": true, "street": true, "strasse": true, "straße": true,
+	"rue": true, "iban": true, "ssn": true, "ahv": true, "passport": true, "contact": true, "kontakt": true,
+	"person": true, "patient": true, "customer": false,
+}
+
+// notPersonal are header words that make a "name" column something other
+// than a person's name: a company, a product, a place.
+var notPersonal = map[string]bool{
+	"company": true, "firma": true, "firm": true, "organisation": true, "organization": true, "org": true,
+	"product": true, "produkt": true, "city": true, "ort": true, "country": true, "land": true, "file": true,
+	"brand": true, "bank": true, "store": true, "shop": true, "branch": true, "filiale": true, "user": false,
+}
+
+// personalHeader reports whether a column header names personal data.
+func personalHeader(name string) bool {
+	words := reWordSplit.Split(strings.ToLower(name), -1)
+	joined := strings.Join(words, "")
+	hit := personalWords[joined]
+	for _, w := range words {
+		if notPersonal[w] {
+			return false
+		}
+		if personalWords[w] {
+			hit = true
+		}
+	}
+	return hit
+}
 
 // mode returns the most common value of a small integer tally.
 func mode(counts map[int]int) (val, n int) {
@@ -61,7 +103,7 @@ func Profile(t *Table) []Column {
 		c := Column{Name: name, Kind: "text"}
 		seen := map[string]bool{}
 		decimals, fracs := map[int]int{}, map[int]int{}
-		ints, nonEmpty := 0, 0
+		ints, dates, emails, nonEmpty := 0, 0, 0, 0
 		for _, row := range t.Rows {
 			v := row[i]
 			if v == "" {
@@ -79,6 +121,10 @@ func Profile(t *Table) []Column {
 				decimals[len(reDecimal.FindStringSubmatch(v)[1])]++
 			case reInteger.MatchString(v):
 				ints++
+			case reDate.MatchString(v):
+				dates++
+			case reEmail.MatchString(v):
+				emails++
 			}
 		}
 		if nonEmpty == 0 {
@@ -101,7 +147,10 @@ func Profile(t *Table) []Column {
 			}
 		case ints*10 >= nonEmpty*9:
 			c.Kind = "integer"
+		case dates*10 >= nonEmpty*9:
+			c.Kind = "date"
 		}
+		c.Personal = c.Kind == "text" && (personalHeader(name) || emails*10 >= nonEmpty*8)
 		out[i] = c
 	}
 	return out
@@ -132,8 +181,13 @@ func DetectSchema(t *Table) (Schema, []Column) {
 		}
 	}
 	for _, c := range cols {
-		if c.Name != s.Key && c.Unique >= 0.98 && identifier(c) && len(s.Match) < 3 {
+		if c.Name != s.Key && c.Unique >= 0.98 && identifier(c) && !c.Personal && len(s.Match) < 3 {
 			s.Match = append(s.Match, c.Name)
+		}
+	}
+	for _, c := range cols {
+		if c.Personal && c.Name != s.Key {
+			s.Redact = append(s.Redact, c.Name)
 		}
 	}
 	for _, c := range cols {
@@ -180,6 +234,24 @@ func (s Schema) Validate(t *Table) error {
 			}
 		}
 	}
+	for _, name := range s.Redact {
+		switch {
+		case t.Col(name) < 0:
+			return fmt.Errorf("column %q is not in the table", name)
+		case name == s.Key:
+			return fmt.Errorf("column %q identifies rows, so it cannot also be redacted", name)
+		case s.tolerant(name):
+			return fmt.Errorf("column %q cannot be both tolerant and redacted", name)
+		}
+		for _, m := range s.Match {
+			if m == name {
+				return fmt.Errorf("column %q cannot both match rows and be redacted", name)
+			}
+		}
+	}
+	if s.Key != "" && s.tolerant(s.Key) {
+		return fmt.Errorf("column %q identifies rows, so it cannot also carry marks", s.Key)
+	}
 	if s.Key == "" && len(s.Match) == 0 && len(s.stable(t)) == 0 {
 		return fmt.Errorf("no column identifies a row, so marks cannot be placed")
 	}
@@ -187,16 +259,26 @@ func (s Schema) Validate(t *Table) error {
 }
 
 // stable lists the columns that marking never alters, which is what a row is
-// recognised by when its identifying column has been dropped.
+// recognised by when its identifying column has been dropped. Redacted
+// columns are left out: they differ from copy to copy.
 func (s Schema) stable(t *Table) []string {
 	var out []string
 	for _, name := range t.Columns {
-		if name == s.Dummy || s.tolerant(name) {
+		if name == s.Dummy || s.tolerant(name) || s.redacted(name) {
 			continue
 		}
 		out = append(out, name)
 	}
 	return out
+}
+
+func (s Schema) redacted(name string) bool {
+	for _, r := range s.Redact {
+		if r == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (s Schema) tolerant(name string) bool {

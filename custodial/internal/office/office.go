@@ -146,14 +146,19 @@ func (f *File) Bytes() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// contentParts lists the XML parts that hold text, in a stable order.
+// contentParts lists the XML parts that hold text, in a stable order. A
+// workbook keeps its text in the shared string table when Excel or
+// LibreOffice wrote it, but openpyxl and pandas write inline strings into
+// the worksheets themselves, so those sheets count as text parts too.
 func (f *File) contentParts() []string {
 	var out []string
 	for _, n := range f.names {
 		switch {
 		case f.Kind == Docx && n == "word/document.xml",
 			f.Kind == Pptx && strings.HasPrefix(n, "ppt/slides/slide") && strings.HasSuffix(n, ".xml"),
-			f.Kind == Xlsx && n == "xl/sharedStrings.xml":
+			f.Kind == Xlsx && n == "xl/sharedStrings.xml",
+			f.Kind == Xlsx && strings.HasPrefix(n, "xl/worksheets/sheet") && strings.HasSuffix(n, ".xml") &&
+				strings.Contains(string(f.parts[n]), `t="inlineStr"`):
 			out = append(out, n)
 		}
 	}
@@ -178,7 +183,7 @@ var (
 	reTag    = regexp.MustCompile(`(?s)<[^>]+>`)
 )
 
-var reParaEnd = regexp.MustCompile(`</(?:w:p|a:p|si)>`)
+var reParaEnd = regexp.MustCompile(`</(?:w:p|a:p|si|is)>`)
 
 // Text returns the readable text of the document, without the invisible marks.
 // Runs are joined without separators, since marking splits them per word.

@@ -41,7 +41,11 @@ export async function api(path, { method = 'GET', json, form } = {}) {
   }
   const res = await fetch(apiURL(path), opts);
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.error || `${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    const err = new Error(body.error || `${res.status} ${res.statusText}`);
+    err.status = res.status;
+    throw err;
+  }
   return body;
 }
 
@@ -84,7 +88,10 @@ export function renderTable(container, columns, rows, { highlight = [], empty = 
   container.append(table);
 }
 
-const LABEL = { attributed: 'Attributed', inconclusive: 'Inconclusive', absent: 'Not found', 'n/a': 'Not applicable', wrong: 'Wrong recipient' };
+const LABEL = {
+  attributed: 'Attributed', inconclusive: 'Inconclusive', absent: 'Not found', 'n/a': 'Not applicable',
+  wrong: 'Wrong recipient', invalid: 'Invalid check', conflict: 'Conflict', other: 'Other recipient',
+};
 
 export function effectiveStatus(result, truth) {
   if (result.status === 'attributed' && truth && result.markId && result.markId !== truth.markId) return 'wrong';
@@ -95,13 +102,19 @@ export function pill(status) {
   return el('span', { class: 'pill ' + (status === 'n/a' ? 'na' : status), text: LABEL[status] || status });
 }
 
+// decisionBlock explains what a layer's bits decoded to. A layer that
+// recovered only part of the codeword has no mark ID of its own: the decoder
+// fills the missing bits with guesses, so it only shows the best match.
 function decisionBlock(d) {
   if (!d || d.status === 'absent') return null;
   const ranking = (d.ranking || []).slice(0, 3);
-  return el('div', { class: 'small muted' },
-    `Decoded mark ${d.decodedId}${d.decodedInLog ? '' : ' (not in the log)'}. Closest matches:`,
+  const partial = d.bitsObserved < 32;
+  const head = partial
+    ? `Partial mark (${d.bitsObserved} of 32 bits).` + (ranking.length ? ' Closest matches, on the bits recovered:' : ' No copy in the log to compare with.')
+    : `Decoded mark ${d.decodedId}${d.decodedInLog ? '' : ' (not in the log)'}.` + (ranking.length ? ' Closest matches:' : '');
+  return el('div', { class: 'small muted' }, head,
     ranking.length ? el('ol', { class: 'rank' }, ranking.map((r) =>
-      el('li', {}, `${r.recipient}: ${Math.round(r.agreement * 100)}% match, ${r.errors} bit errors`))) : null);
+      el('li', {}, `${r.recipient}: ${Math.round(r.agreement * 100)}% match, ${r.errors} bit ${r.errors === 1 ? 'error' : 'errors'}`))) : null);
 }
 
 export function renderReport(container, report, truth) {
@@ -215,36 +228,61 @@ export function setupDropzone(zone, input, onFiles, area = zone) {
 
 const HEADLINE = {
   attributed: 'Tagged',
+  conflict: 'Conflicting marks',
   inconclusive: 'Possible tag',
   absent: 'No tag found',
 };
 
-export function verifyCard(card, name, size, rep) {
+// chipStatus shows a layer that names someone other than the verdict as
+// pointing elsewhere, rather than as a plain green "attributed".
+function chipStatus(r, v) {
+  if (r.status === 'attributed' && v.status === 'attributed' && r.markId !== v.markId) return 'other';
+  return r.status;
+}
+
+export function verifyCard(card, name, size, rep, issuance) {
   const v = rep.verdict;
-  const status = v.status === 'attributed' ? 'attributed' : v.status === 'inconclusive' ? 'inconclusive' : 'absent';
+  const status = HEADLINE[v.status] ? v.status : 'absent';
   card.className = 'verify-card ' + status;
 
-  const surviving = rep.results.filter((r) => r.status === 'attributed');
   let summary;
   if (status === 'attributed') {
+    const from = v.readFrom || [];
     summary = el('div', {},
-      el('div', { class: 'who' }, 'Issued to ', el('b', { text: v.recipient }), ' ', el('span', { class: 'mono', text: v.markId })),
-      el('div', { class: 'muted small', text: [v.confidence, surviving.length ? 'Read from ' + surviving.map((r) => r.name).join(', ') : ''].filter(Boolean).join('. ') }));
+      el('div', { class: 'who' }, 'Issued to ', el('b', { text: v.recipient }), ' ', el('span', { class: 'mono', text: v.markId }),
+        v.weak ? el('span', { class: 'weak-flag', text: 'weak evidence' }) : null),
+      el('div', { class: 'muted small', text: [v.confidence, from.length ? 'Read from ' + from.join(', ') : ''].filter(Boolean).join('. ') }),
+      issuance ? el('div', { class: 'muted small', text: `Copy of ${issuance.fileName}, issued ${fmtTime(issuance.issuedAt)}${issuance.issuedBy ? ' by ' + issuance.issuedBy : ''}` }) : null);
+  } else if (status === 'conflict') {
+    summary = el('div', {},
+      el('div', { class: 'conflict-lead', text: 'Possible tampering or merged copies. The layers point at different recipients:' }),
+      el('ul', { class: 'candidates' }, (v.candidates || []).map((c) => el('li', {},
+        el('b', { text: c.recipient }), ' ', el('span', { class: 'mono muted', text: c.markId }),
+        el('span', { class: 'muted' }, ` · ${c.layers.join(', ')} (${c.strength})`)))),
+      el('div', { class: 'muted small', text: v.detail }));
   } else if (status === 'inconclusive') {
     summary = el('div', { class: 'muted', text: 'Signal found, but not enough to name a recipient.' });
   } else {
     summary = el('div', { class: 'muted', text: 'No tag survives in this file. Either it was not issued here, or every layer was destroyed.' });
   }
+  const warnings = (v.warnings || []).length
+    ? el('ul', { class: 'notes tamper' }, v.warnings.map((w) => el('li', { text: w })))
+    : null;
 
-  card.replaceChildren(
+  // replaceChildren would print a null as "null", so drop the empty parts.
+  card.replaceChildren(...[
     el('div', { class: 'vc-head' },
       el('b', { text: name }),
       el('span', { class: 'muted small', text: [rep.input, size, new Date().toLocaleTimeString()].filter(Boolean).join(' · ') })),
     el('div', { class: 'vc-status' }, el('span', { class: 'big', text: HEADLINE[status] }), summary),
-    el('div', { class: 'layer-chips' }, rep.results.map((r) => el('span', { class: 'chip', title: r.detail }, pill(r.status), ' ', r.name))),
+    warnings,
+    el('div', { class: 'layer-chips' }, rep.results.map((r) => el('span', { class: 'chip', title: r.detail },
+      pill(chipStatus(r, v)), ' ', r.name,
+      r.status === 'attributed' && (status === 'conflict' || r.markId !== v.markId) ? el('span', { class: 'muted', text: ` → ${r.recipient}` }) : null))),
     el('details', {},
       el('summary', { text: 'Layer detail' }),
-      renderCards(el('div'), rep.results, null)));
+      renderCards(el('div'), rep.results, null)),
+  ].filter(Boolean));
 }
 
 export function fmtSize(bytes) {

@@ -1,7 +1,6 @@
 package tabular
 
 import (
-	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -69,7 +68,7 @@ func (r *Registry) detectAllocation(leaked *Table, pks []string) Result {
 	// Fewer than three expected hits cannot separate one copy from another.
 	if expect < 3 {
 		res.Status = "inconclusive"
-		res.Detail = fmt.Sprintf("Only %d rows matched, so a wrong copy would be expected to show about %.1f withheld rows. That is too few to tell copies apart.", len(seen), expect)
+		res.Detail = sayf("Only %d rows matched, so a wrong copy would be expected to show about %.1f withheld rows. That is too few to tell copies apart.", len(seen), expect)
 		return res
 	}
 	best, second := score{hits: 1 << 30}, score{hits: 1 << 30}
@@ -80,13 +79,13 @@ func (r *Registry) detectAllocation(leaked *Table, pks []string) Result {
 			second = s
 		}
 	}
-	res.Detail = fmt.Sprintf("%d of %d matched rows belong to the slice withheld from %s, against about %.0f expected for any other copy.",
+	res.Detail = sayf("%d of %d matched rows belong to the slice withheld from %s, against about %.0f expected for any other copy.",
 		best.hits, len(seen), codec.FormatID(best.id), expect)
 	if float64(best.hits) < expect/3 && (len(scores) == 1 || second.hits > best.hits) {
 		res.Status = "attributed"
 		res.MarkID = codec.FormatID(best.id)
 		res.Recipient = r.label(best.id)
-		res.Confidence = fmt.Sprintf("%d withheld rows present, %.0f expected if this were another copy", best.hits, expect)
+		res.Confidence = sayf("%d withheld rows present, %.0f expected if this were another copy", best.hits, expect)
 	} else {
 		res.Status = "inconclusive"
 		res.Detail += " No copy stands out."
@@ -134,7 +133,7 @@ func (r *Registry) detectOrdering(leaked *Table, pks []string) Result {
 		res.Detail = "No pair of rows is still next to the row it was issued beside, so the order carries nothing."
 		return res
 	}
-	res.Detail = fmt.Sprintf("Read %d pairs still in their issued positions. Recovered %d of %d bits, decoded %s, %d bit errors.",
+	res.Detail = sayf("Read %d pairs still in their issued positions. Recovered %d of %d bits, decoded %s, %d bit errors.",
 		pairs, d.BitsObserved, codec.CodeLen, d.DecodedID, d.BitErrors)
 	res.Confidence = codec.FormatProb(d.FalseProb)
 	if d.Status == "attributed" {
@@ -190,13 +189,13 @@ func (r *Registry) detectNoise(leaked *Table, pks []string) Result {
 	res.Status = d.Status
 	if cells == 0 {
 		res.Status = "absent"
-		res.Detail = fmt.Sprintf("No value still sits within a nudge of the source (%d checked), so the direction cannot be read.", lost)
+		res.Detail = sayf("No value still sits within a nudge of the source (%d checked), so the direction cannot be read.", lost)
 		return res
 	}
-	res.Detail = fmt.Sprintf("Read the direction of %d nudges against the source. Recovered %d of %d bits, decoded %s, %d bit errors.",
+	res.Detail = sayf("Read the direction of %d nudges against the source. Recovered %d of %d bits, decoded %s, %d bit errors.",
 		cells, d.BitsObserved, codec.CodeLen, d.DecodedID, d.BitErrors)
 	if lost > 0 {
-		res.Detail += fmt.Sprintf(" %d values moved too far to read.", lost)
+		res.Detail += sayf(" %d values moved too far to read.", lost)
 	}
 	res.Confidence = codec.FormatProb(d.FalseProb)
 	if d.Status == "attributed" {
@@ -264,7 +263,7 @@ func (r *Registry) detectFormat(leaked *Table, pks []string) Result {
 		res.Detail = "No value is still written the way it was issued, so this carrier was lost."
 		return res
 	}
-	res.Detail = fmt.Sprintf("Compared %d values with the way the source writes them. Recovered %d of %d bits, decoded %s, %d bit errors.",
+	res.Detail = sayf("Compared %d values with the way the source writes them. Recovered %d of %d bits, decoded %s, %d bit errors.",
 		cells, d.BitsObserved, codec.CodeLen, d.DecodedID, d.BitErrors)
 	res.Confidence = codec.FormatProb(d.FalseProb)
 	if d.Status == "attributed" {
@@ -281,7 +280,18 @@ func (r *Registry) detectRedaction(leaked *Table, pks []string) Result {
 	names := r.Schema.redactable(r.Master)
 	if len(names) == 0 {
 		res.Status = "absent"
-		res.Detail = "The source has no column that reads as personal text."
+		res.Detail = "No column of the source is set to be redacted."
+		return res
+	}
+	present := 0
+	for _, name := range names {
+		if leaked.Col(name) >= 0 {
+			present++
+		}
+	}
+	if present == 0 {
+		res.Status = "absent"
+		res.Detail = "The redacted columns (" + joinAnd(names) + ") are not in this file."
 		return res
 	}
 	idx := r.masterRows()
@@ -312,7 +322,7 @@ func (r *Registry) detectRedaction(leaked *Table, pks []string) Result {
 	}
 	if valid == 0 {
 		res.Status = "absent"
-		res.Detail = fmt.Sprintf("None of the %d values checked is a pseudonym issued from this source.", readable)
+		res.Detail = sayf("None of the %d values checked is a pseudonym issued from this source.", readable)
 		return res
 	}
 	var best uint16
@@ -322,12 +332,12 @@ func (r *Registry) detectRedaction(leaked *Table, pks []string) Result {
 			best, bestN = id, n
 		}
 	}
-	res.Detail = fmt.Sprintf("%d of %d values carry a valid pseudonym, %d of them issued to %s.", valid, readable, bestN, codec.FormatID(best))
+	res.Detail = sayf("%d of %d values carry a valid pseudonym, %d of them issued to %s.", valid, readable, bestN, codec.FormatID(best))
 	if bestN >= 3 && bestN*10 >= valid*6 {
 		res.Status = "attributed"
 		res.MarkID = codec.FormatID(best)
 		res.Recipient = r.label(best)
-		res.Confidence = fmt.Sprintf("%d values agree, each with a 1-in-100 check value", bestN)
+		res.Confidence = sayf("%d values agree, each with a 1-in-100 check value", bestN)
 	} else {
 		res.Status = "inconclusive"
 	}

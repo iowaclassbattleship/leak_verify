@@ -16,7 +16,10 @@
   <nav class="tabs" role="tablist">
     <a href="#mark" role="tab" data-tab="mark">Mark</a>
     <a href="#verify" role="tab" data-tab="verify">Verify</a>
+    <a href="#log" role="tab" data-tab="log">Log</a>
+    <span class="navsep" aria-hidden="true"></span>
     <span class="user" data-user></span>
+    <form method="post" action="/logout" class="signout"><button type="submit" class="link">Sign out</button></form>
   </nav>
 </header>
 
@@ -33,6 +36,27 @@
         <input id="mark-file" type="file" accept=".csv,text/csv" hidden>
         <a class="button" id="mark-download" href="/api/data/source.csv" hidden>Download source</a>
       </div>
+      <details class="csv-format" id="mark-format">
+        <summary>CSV format <span id="mark-format-read" class="dim"></span></summary>
+        <div class="row">
+          <label>Delimiter
+            <select name="delimiter">
+              <option value="">Detect</option>
+              <option value=",">Comma ,</option>
+              <option value=";">Semicolon ;</option>
+              <option value="tab">Tab</option>
+              <option value="|">Pipe |</option>
+            </select></label>
+          <label>Decimals
+            <select name="decimal">
+              <option value="">Detect</option>
+              <option value="point">Point 1234.56</option>
+              <option value="comma">Comma 1234,56</option>
+            </select></label>
+          <button type="button" id="mark-reload" disabled>Load again</button>
+        </div>
+      </details>
+      <p id="mark-error" class="load-error" role="alert" hidden></p>
     </fieldset>
 
     <fieldset>
@@ -80,11 +104,13 @@
       <div id="issue-list" class="list"></div>
       <p id="issue-empty" class="dim small">Nobody added yet.</p>
 
-      <form id="issue-add" class="addform">
-        <input name="name" placeholder="Name or organisation" required>
+      <form id="issue-add" class="addform" novalidate>
+        <input name="name" placeholder="Name or organisation">
         <input name="org" placeholder="Purpose, optional">
+        <select name="unit" aria-label="Group"></select>
         <button type="submit">Add</button>
       </form>
+      <p id="issue-add-error" class="field-error" role="alert" hidden></p>
 
       <div class="row" id="issue-actions">
         <span class="grow"></span>
@@ -102,12 +128,24 @@
       <p class="dim" id="verify-context">loading</p>
       <label id="verify-drop" class="drop" tabindex="0">
         <input id="verify-file" type="file" accept=".csv,text/csv">
-        <span class="mark" aria-hidden="true">[ ? ]</span>
+        <span class="mark" aria-hidden="true">⇩</span>
         <b>Drop a CSV here</b>
         <span class="dim">or click to choose, up to 25 MB</span>
       </label>
     </fieldset>
     <div id="verify-results"></div>
+  </section>
+
+  <!-- ================================= LOG ================================= -->
+  <section id="log" class="module" hidden>
+    <fieldset>
+      <legend>Issuance log</legend>
+      <div class="row">
+        <p id="log-scope" class="dim grow"></p>
+        <label class="dim small">Viewing as <select id="log-viewer"></select></label>
+      </div>
+      <div id="log-table"></div>
+    </fieldset>
   </section>
 </main>
 

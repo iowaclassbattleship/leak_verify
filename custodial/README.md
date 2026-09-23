@@ -73,6 +73,15 @@ does not print from Excel.
 
 A PDF is reduced to its text and re-typeset with an embedded font, so the demo writes and parses its own PDFs. Office files, by contrast, are marked in place.
 
+Text extraction handles what ordinary producers write: simple fonts with a
+base encoding, `/Differences` and ToUnicode (ReportLab, TeX), Type0 fonts with
+Identity-H codes and ToUnicode (LibreOffice, Word, Chromium), filter chains
+(ASCII85 over Flate, for one), compressed object streams, and pages that flip
+or scale the coordinate system with `cm`. `custodial/server/testdata` holds a
+ReportLab and a Chromium PDF that the tests extract word for word. Encrypted
+PDFs, scans and text inside form XObjects are not read. When extraction fails,
+the upload is refused with the reason: the sample is never loaded in its place.
+
 | Layer | Embedding | Survives | Breaks |
 |---|---|---|---|
 | Layout | Each body line's baseline shifted ±0.45 pt (line-shift coding) | re-save, screenshot, print+scan | copy-paste |
@@ -101,9 +110,25 @@ The app has two tabs:
   1. **Document:** drop a PDF or text file, or use the sample.
   2. **Recipients:** pick recipients from the roster or add new ones. Protection layers are under a collapsible panel.
   3. **Share:** download each recipient's tagged PDF, named `<document>_<recipient>.pdf`, or all of them as one zip. Every copy is recorded in the issuance log.
-- **Verify:** drop or choose one or more files (the Open XML file, a PDF export or screenshot of it, or PDF, PNG or JPEG for the PDF pipeline). Each gets a result card: *Tagged* (with recipient and mark ID), *Possible tag*, or *No tag found*, plus per-layer evidence.
+- **Verify:** drop or choose one or more files (the Open XML file, a PDF export or screenshot of it, or PDF, PNG or JPEG for the PDF pipeline). Each gets a result card: *Tagged* (with recipient, mark ID and the copy it came from), *Conflicting marks*, *Possible tag*, or *No tag found*, plus per-layer evidence.
 
-Verification reads every layer against the current document's issuance log. A file is *Tagged* when a unique recipient matches with chance-match probability ≤ 1e-3. It counts as *No tag found* when the best evidence is at chance level (≥ 5%).
+Verification checks a file against the whole issuance log, not just the
+document loaded on the Tag tab: an Open XML file against every Open XML copy,
+a PDF or image against every PDF copy (using each master still held in the
+session, and the sample, which is rebuilt identically) and against the Open
+XML background watermark. The strongest reading wins. A file is *Tagged* when
+a unique recipient matches with chance-match probability ≤ 1e-3. It counts as
+*No tag found* when the best evidence is at chance level (≥ 5%).
+
+Layers are reconciled rather than outvoted (`codec.Reconcile`). When two
+layers that each identify someone on their own point at different recipients,
+or a stored tag names one recipient while a bit layer leans to another, the
+card says *Conflicting marks* and lists each candidate with the layers behind
+them: that is what a planted tag or merged copies look like. *Read from* lists
+only the layers that agree with the named recipient. A stored tag whose check
+value fails is shown as *Invalid check*, with a tampering warning, and never
+counts as evidence for anyone. A result carried by the spacing layer alone is
+labelled weak evidence.
 
 The issuance log has its own tab, with a viewer selector. A viewer sees only
 issuances to recipients in their own subtree of the hierarchy, and only the
@@ -124,5 +149,6 @@ everyone else sees them as `restricted`.
 - The frequency-domain watermark is tuned to be invisible on screen, so it does not survive printing. It also lives in a separate background image that editors can delete.
 - The background watermark in an Open XML file was verified against LibreOffice's renderer. Word, PowerPoint and Excel place tiled backgrounds slightly differently, so a production build would verify each one.
 - No layer marks the words themselves, so copy-pasted text carries no tag.
-- Collusion is only flagged when techniques disagree; it is not traced.
+- Conflicting layers are reported with every candidate, but the demo does not decide which of them leaked.
+- The public deployment's reverse proxy must allow 25 MB request bodies (`client_max_body_size 25m`, see `deploy/nginx.conf`). Where it does not, the Verify tab shrinks an oversized screenshot to a JPEG and retries once; other files fail with a message naming the proxy limit.
 - Covert marking is a technical property. Whether recipients are told is a legal and policy decision.

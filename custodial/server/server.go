@@ -21,12 +21,16 @@ type Server struct {
 	key    codec.Key
 	engine *document.Engine
 	doc    *docState
+	// masters keeps every PDF typeset in this session by source, so a copy
+	// of an earlier document can still be verified after another one is
+	// loaded. The sample is rebuilt identically on every start.
+	masters map[string]*document.Master
 }
 
 // New builds one user's instance. key is derived per user so it survives a
 // restart, and st holds their issuance log between processes.
 func New(key codec.Key, user string, st *store.Store) *Server {
-	s := &Server{key: key, engine: document.NewEngine(key), user: user, store: st}
+	s := &Server{key: key, engine: document.NewEngine(key), user: user, store: st, masters: map[string]*document.Master{}}
 	s.resetDocument(s.engine.NewMaster(document.SampleDoc(), sampleSource), "Project-Halcyon-Board-Briefing")
 	s.loadLog()
 	return s

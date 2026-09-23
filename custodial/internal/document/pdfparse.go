@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"compress/flate"
 	"compress/zlib"
+	"encoding/ascii85"
 	"errors"
 	"image/color"
 	"image/jpeg"
 	"io"
+	"math"
 	"regexp"
 	"sort"
 	"strconv"
@@ -15,9 +17,10 @@ import (
 )
 
 // This is a deliberately small PDF reader: enough for the files this demo
-// writes (and re-saves), plus best-effort text extraction from simple
-// uploaded PDFs. It does not handle encryption, object streams for page
-// objects, or CID font encodings.
+// writes (and re-saves), plus text extraction from ordinary uploaded PDFs:
+// simple and Type0 (Identity-H) fonts, ToUnicode CMaps, filter chains and
+// compressed object streams. It does not handle encryption, and it does not
+// look inside form XObjects for text.
 
 type pdfObject struct {
 	dict   []byte
@@ -25,13 +28,9 @@ type pdfObject struct {
 }
 
 type PDFFile struct {
-	Info  map[string]string
-	Pages [][]byte // decoded content per page, in page order
-	// glyphs maps single-byte codes to text using font /Differences arrays
-	// (e.g. TeX fonts put the "fi" ligature at code 2). Best effort: codes
-	// that different fonts map differently are left out.
-	glyphs       map[byte]string
-	pageFonts    []map[string]*fontWidths
+	Info         map[string]string
+	Pages        [][]byte // decoded content per page, in page order
+	pageFonts    []map[string]*pdfFont
 	pageImages   []map[string]*PDFImage
 	pageMultiply []map[string]bool
 }
@@ -56,24 +55,9 @@ func (f *PDFFile) Images() []*PDFImage {
 	return out
 }
 
-// fontWidths holds a simple font's /FirstChar and /Widths (1/1000 em).
-type fontWidths struct {
-	first  int
-	widths []float64
-}
-
-func (fw *fontWidths) width(c byte) float64 {
-	if fw != nil {
-		if i := int(c) - fw.first; i >= 0 && i < len(fw.widths) && fw.widths[i] > 0 {
-			return fw.widths[i]
-		}
-	}
-	return 500 // unknown font (e.g. CID): assume half an em
-}
-
 // PageContent interprets page i with the file's glyph mapping applied.
 func (f *PDFFile) PageContent(i int) PageContent {
-	var fonts map[string]*fontWidths
+	var fonts map[string]*pdfFont
 	if i < len(f.pageFonts) {
 		fonts = f.pageFonts[i]
 	}
@@ -84,51 +68,7 @@ func (f *PDFFile) PageContent(i int) PageContent {
 			pc.Images[j].Multiply = f.pageMultiply[i][d.GS]
 		}
 	}
-	for j, r := range pc.Runs {
-		var b strings.Builder
-		for k := 0; k < len(r.Text); k++ {
-			if g, ok := f.glyphs[r.Text[k]]; ok {
-				b.WriteString(g)
-			} else {
-				b.WriteString(decodeSimpleText(r.Text[k : k+1]))
-			}
-		}
-		pc.Runs[j].Text = b.String()
-	}
 	return pc
-}
-
-var glyphText = map[string]string{
-	"fi": "fi", "fl": "fl", "ff": "ff", "ffi": "ffi", "ffl": "ffl", "quoteright": "'", "quoteleft": "'",
-	"quotedblleft": "\"", "quotedblright": "\"", "endash": "-", "emdash": "-", "bullet": "-", "minus": "-",
-}
-
-func parseDifferences(objs map[int]*pdfObject) map[byte]string {
-	out := map[byte]string{}
-	conflict := map[byte]bool{}
-	for _, o := range objs {
-		for _, m := range reDifferences.FindAllSubmatch(o.dict, -1) {
-			code := 0
-			for _, tok := range reDiffToken.FindAll(m[1], -1) {
-				if tok[0] != '/' {
-					code, _ = strconv.Atoi(string(tok))
-					continue
-				}
-				if t, ok := glyphText[string(tok[1:])]; ok && code >= 0 && code < 256 && (code < 32 || code > 126) {
-					c := byte(code)
-					if prev, seen := out[c]; seen && prev != t {
-						conflict[c] = true
-					}
-					out[c] = t
-				}
-				code++
-			}
-		}
-	}
-	for c := range conflict {
-		delete(out, c)
-	}
-	return out
 }
 
 var (
@@ -255,7 +195,7 @@ func ParsePDF(data []byte) (*PDFFile, error) {
 		}
 	}
 
-	f := &PDFFile{Info: map[string]string{}, glyphs: parseDifferences(objs)}
+	f := &PDFFile{Info: map[string]string{}}
 	if ms := reInfo.FindAllSubmatch(data, -1); len(ms) > 0 {
 		n, _ := strconv.Atoi(string(ms[len(ms)-1][1]))
 		if o, ok := objs[n]; ok {
@@ -280,6 +220,7 @@ func ParsePDF(data []byte) (*PDFFile, error) {
 		}
 		return out
 	}
+	fontCache := map[int]*pdfFont{}
 	var walk func(n, depth int, inherited []byte)
 	walk = func(n, depth int, inherited []byte) {
 		o, ok := objs[n]
@@ -302,7 +243,7 @@ func ParsePDF(data []byte) (*PDFFile, error) {
 		}
 		if reTypePage.Match(o.dict) {
 			f.Pages = append(f.Pages, contentsOf(o))
-			f.pageFonts = append(f.pageFonts, fontsOf(objs, res))
+			f.pageFonts = append(f.pageFonts, fontsOf(objs, res, fontCache))
 			f.pageImages = append(f.pageImages, imagesOf(objs, res))
 			f.pageMultiply = append(f.pageMultiply, multiplyOf(res))
 		}
@@ -340,7 +281,7 @@ func atoi(b []byte) int {
 	return n
 }
 
-func fontsOf(objs map[int]*pdfObject, res []byte) map[string]*fontWidths {
+func fontsOf(objs map[int]*pdfObject, res []byte, cache map[int]*pdfFont) map[string]*pdfFont {
 	if res == nil {
 		return nil
 	}
@@ -352,31 +293,20 @@ func fontsOf(objs map[int]*pdfObject, res []byte) map[string]*fontWidths {
 	} else if m := reFontInline.FindSubmatch(res); m != nil {
 		fontDict = m[1]
 	}
-	out := map[string]*fontWidths{}
+	out := map[string]*pdfFont{}
 	for _, m := range reNameRef.FindAllSubmatch(fontDict, -1) {
-		o, ok := objs[atoi(m[2])]
+		n := atoi(m[2])
+		if f, ok := cache[n]; ok {
+			out[string(m[1])] = f
+			continue
+		}
+		o, ok := objs[n]
 		if !ok {
 			continue
 		}
-		fw := &fontWidths{}
-		if fc := reFirstChar.FindSubmatch(o.dict); fc != nil {
-			fw.first = atoi(fc[1])
-		}
-		var arr []byte
-		if w := reWidthsInline.FindSubmatch(o.dict); w != nil {
-			arr = w[1]
-		} else if w := reWidthsRef.FindSubmatch(o.dict); w != nil {
-			if ao, ok := objs[atoi(w[1])]; ok {
-				arr = bytes.Trim(bytes.TrimSpace(ao.dict), "[]")
-			}
-		}
-		for _, num := range reNumber.FindAll(arr, -1) {
-			v, _ := strconv.ParseFloat(string(num), 64)
-			fw.widths = append(fw.widths, v)
-		}
-		if len(fw.widths) > 0 {
-			out[string(m[1])] = fw
-		}
+		f := loadFont(objs, o.dict)
+		cache[n] = f
+		out[string(m[1])] = f
 	}
 	return out
 }
@@ -418,19 +348,47 @@ func multiplyOf(res []byte) map[string]bool {
 	return out
 }
 
+var (
+	reFilter     = regexp.MustCompile(`/Filter\s*(/\w+|\[[^\]]*\])`)
+	reFilterName = regexp.MustCompile(`/(\w+)`)
+)
+
+// decodeStream applies a stream's filter chain. Flate, ASCII85, ASCIIHex and
+// RunLength cover what text producers use (ReportLab, for one, writes
+// ASCII85 over Flate); a JPEG image is decoded to greyscale. Anything else
+// comes back nil.
 func decodeStream(dict, raw []byte) []byte {
 	if raw == nil {
 		return nil
 	}
-	if !bytes.Contains(dict, []byte("/Filter")) {
+	m := reFilter.FindSubmatch(dict)
+	if m == nil {
 		return raw
 	}
-	if bytes.Contains(dict, []byte("/DCTDecode")) && bytes.Count(dict, []byte("Decode")) == 1 {
-		return jpegGray(raw) // an image another application re-encoded
+	out := raw
+	for _, name := range reFilterName.FindAllSubmatch(m[1], -1) {
+		switch string(name[1]) {
+		case "FlateDecode", "Fl":
+			out = inflate(out)
+		case "ASCII85Decode", "A85":
+			out = decodeASCII85(out)
+		case "ASCIIHexDecode", "AHx":
+			out = decodeASCIIHex(out)
+		case "RunLengthDecode", "RL":
+			out = decodeRunLength(out)
+		case "DCTDecode", "DCT":
+			out = jpegGray(out) // an image another application re-encoded
+		default:
+			return nil // LZW, JBIG2, CCITT: not needed for this demo
+		}
+		if out == nil {
+			return nil
+		}
 	}
-	if !bytes.Contains(dict, []byte("/FlateDecode")) || bytes.Count(dict, []byte("Decode")) > 1 {
-		return nil // LZW, chained filters: not needed for this demo
-	}
+	return out
+}
+
+func inflate(raw []byte) []byte {
 	if r, err := zlib.NewReader(bytes.NewReader(raw)); err == nil {
 		if out, err := io.ReadAll(r); err == nil || len(out) > 0 {
 			return out
@@ -440,6 +398,70 @@ func decodeStream(dict, raw []byte) []byte {
 		return out
 	}
 	return nil
+}
+
+func decodeASCII85(raw []byte) []byte {
+	raw = bytes.TrimSpace(raw)
+	raw = bytes.TrimPrefix(raw, []byte("<~"))
+	if i := bytes.Index(raw, []byte("~>")); i >= 0 {
+		raw = raw[:i]
+	}
+	out := make([]byte, 4*len(raw)/5+8)
+	n, _, err := ascii85.Decode(out, raw, true)
+	if err != nil {
+		return nil
+	}
+	return out[:n]
+}
+
+func decodeASCIIHex(raw []byte) []byte {
+	var out []byte
+	hi := -1
+	for _, c := range raw {
+		var v int
+		switch {
+		case c >= '0' && c <= '9':
+			v = int(c - '0')
+		case c >= 'a' && c <= 'f':
+			v = int(c-'a') + 10
+		case c >= 'A' && c <= 'F':
+			v = int(c-'A') + 10
+		case c == '>':
+			if hi >= 0 {
+				out = append(out, byte(hi<<4))
+			}
+			return out
+		default:
+			continue
+		}
+		if hi < 0 {
+			hi = v
+		} else {
+			out = append(out, byte(hi<<4|v))
+			hi = -1
+		}
+	}
+	return out
+}
+
+func decodeRunLength(raw []byte) []byte {
+	var out []byte
+	for i := 0; i < len(raw); {
+		n := int(raw[i])
+		i++
+		switch {
+		case n == 128:
+			return out
+		case n < 128:
+			end := min(i+n+1, len(raw))
+			out = append(out, raw[i:end]...)
+			i = end
+		case i < len(raw):
+			out = append(out, bytes.Repeat(raw[i:i+1], 257-n)...)
+			i++
+		}
+	}
+	return out
 }
 
 // jpegGray decodes a JPEG image stream to one byte per pixel, so a watermark
@@ -623,13 +645,25 @@ func lexContent(b []byte) []token {
 }
 
 // InterpretContent extracts positioned text runs and filled rectangles.
-// Transformation matrices (cm) are ignored — sufficient for this demo's PDFs.
+// Text positions go through the full text and transformation matrices, so
+// producers that flip or scale the page with cm (Chromium, many print
+// drivers) come out in page coordinates. Rectangles and images use the
+// translation and scale of the CTM only.
 func InterpretContent(b []byte) PageContent { return interpret(b, nil) }
 
-func interpret(b []byte, fonts map[string]*fontWidths) PageContent {
+// mul returns the product m x n of two PDF matrices [a b c d e f].
+func mul(m, n [6]float64) [6]float64 {
+	return [6]float64{
+		m[0]*n[0] + m[1]*n[2], m[0]*n[1] + m[1]*n[3],
+		m[2]*n[0] + m[3]*n[2], m[2]*n[1] + m[3]*n[3],
+		m[4]*n[0] + m[5]*n[2] + n[4], m[4]*n[1] + m[5]*n[3] + n[5],
+	}
+}
+
+func interpret(b []byte, fonts map[string]*pdfFont) PageContent {
 	var pc PageContent
-	var font *fontWidths
-	tc, tw := 0.0, 0.0
+	var font *pdfFont
+	tc, tw, th := 0.0, 0.0, 1.0
 	var stack []token
 	var inArray bool
 	var array []token
@@ -640,11 +674,10 @@ func interpret(b []byte, fonts map[string]*fontWidths) PageContent {
 		gs   string
 	}
 	var gstack []gstate
-	ctm := [6]float64{1, 0, 0, 1, 0, 0}
-	gsName := ""
-	var tm, tlm [6]float64
 	identity := [6]float64{1, 0, 0, 1, 0, 0}
-	tm, tlm = identity, identity
+	ctm := identity
+	gsName := ""
+	tm, tlm := identity, identity
 	leading := 0.0
 	var pendingRects []Rect
 	nums := func(n int) []float64 {
@@ -657,49 +690,53 @@ func interpret(b []byte, fonts map[string]*fontWidths) PageContent {
 		}
 		return out
 	}
-	fontScale := func() float64 {
-		if tm[3] < 0 {
-			return -tm[3]
-		}
-		if tm[3] == 0 {
-			return 1
-		}
-		return tm[3]
-	}
-	addRun := func(x float64, text string) {
-		if text != "" {
-			pc.Runs = append(pc.Runs, TextRun{X: x, Y: tm[5], Size: size * fontScale(), EndX: tm[4], Text: text})
-		}
+	// advance moves the text matrix along its own x axis.
+	advance := func(tx float64) {
+		tm[4] += tx * tm[0]
+		tm[5] += tx * tm[1]
 	}
 	// show advances the text matrix glyph by glyph. Producers such as
 	// Ghostscript encode word gaps as character spacing or TJ offsets rather
 	// than space glyphs, so any gap wider than 0.2 em becomes a space.
 	show := func(elems []token) {
-		x := tm[4]
-		var out []byte
+		start := mul(tm, ctm)
+		var out strings.Builder
+		last := byte(' ')
 		gap := 0.0
 		for _, el := range elems {
 			switch el.kind {
 			case 's':
-				for i := 0; i < len(el.str); i++ {
-					c := el.str[i]
-					if len(out) > 0 && gap > 0.2*size && c != ' ' && out[len(out)-1] != ' ' {
-						out = append(out, ' ')
+				for _, code := range font.codes(el.str) {
+					t := font.text(code)
+					space := t == " " || (!font.isTwoByte() && code == ' ')
+					if out.Len() > 0 && gap > 0.2*size && !space && last != ' ' {
+						out.WriteByte(' ')
+						last = ' '
 					}
 					gap = tc
-					if c == ' ' {
+					if code == ' ' && !font.isTwoByte() {
 						gap += tw
 					}
-					tm[4] += (font.width(c)/1000*size + gap) * tm[0]
-					out = append(out, c)
+					advance((font.width(code)/1000*size + gap) * th)
+					if t != "" {
+						out.WriteString(t)
+						last = t[len(t)-1]
+					}
 				}
 			case 'n':
 				d := -el.num / 1000 * size
-				tm[4] += d * tm[0]
+				advance(d * th)
 				gap += d
 			}
 		}
-		addRun(x, string(out))
+		if text := out.String(); text != "" {
+			end := mul(tm, ctm)
+			scale := math.Hypot(start[2], start[3])
+			if scale == 0 {
+				scale = 1
+			}
+			pc.Runs = append(pc.Runs, TextRun{X: start[4], Y: start[5], Size: size * scale, EndX: end[4], Text: text})
+		}
 	}
 	lastString := func() string {
 		if len(stack) > 0 && stack[len(stack)-1].kind == 's' {
@@ -735,11 +772,7 @@ func interpret(b []byte, fonts map[string]*fontWidths) PageContent {
 			}
 		case "cm":
 			if v := nums(6); v != nil {
-				ctm = [6]float64{
-					v[0]*ctm[0] + v[1]*ctm[2], v[0]*ctm[1] + v[1]*ctm[3],
-					v[2]*ctm[0] + v[3]*ctm[2], v[2]*ctm[1] + v[3]*ctm[3],
-					v[4]*ctm[0] + v[5]*ctm[2] + ctm[4], v[4]*ctm[1] + v[5]*ctm[3] + ctm[5],
-				}
+				ctm = mul([6]float64{v[0], v[1], v[2], v[3], v[4], v[5]}, ctm)
 			}
 		case "gs":
 			if len(stack) > 0 && stack[len(stack)-1].kind == '/' {
@@ -792,6 +825,10 @@ func interpret(b []byte, fonts map[string]*fontWidths) PageContent {
 			if v := nums(1); v != nil {
 				tw = v[0]
 			}
+		case "Tz":
+			if v := nums(1); v != nil {
+				th = v[0] / 100
+			}
 		case "TL":
 			if v := nums(1); v != nil {
 				leading = v[0]
@@ -803,20 +840,24 @@ func interpret(b []byte, fonts map[string]*fontWidths) PageContent {
 			}
 		case "Td", "TD":
 			if v := nums(2); v != nil {
-				tlm[4] += v[0] * tlm[0]
-				tlm[5] += v[1] * tlm[3]
+				tlm = mul([6]float64{1, 0, 0, 1, v[0], v[1]}, tlm)
 				if t.str == "TD" {
 					leading = -v[1]
 				}
 				tm = tlm
 			}
 		case "T*":
-			tlm[5] -= leading * tlm[3]
+			tlm = mul([6]float64{1, 0, 0, 1, 0, -leading}, tlm)
 			tm = tlm
 		case "Tj":
 			show([]token{{kind: 's', str: lastString()}})
 		case "'", "\"":
-			tlm[5] -= leading * tlm[3]
+			if t.str == "\"" {
+				if v := nums(3); v != nil {
+					tw, tc = v[0], v[1]
+				}
+			}
+			tlm = mul([6]float64{1, 0, 0, 1, 0, -leading}, tlm)
 			tm = tlm
 			show([]token{{kind: 's', str: lastString()}})
 		case "TJ":

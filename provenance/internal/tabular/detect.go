@@ -19,14 +19,20 @@ type Result struct {
 	Confidence string          `json:"confidence"`
 	Detail     string          `json:"detail"`
 	Decision   *codec.Decision `json:"decision,omitempty"`
+	// Candidates lists every copy a technique found rows of, when there is
+	// more than one; on the verdict, the recipients of merged copies.
+	Candidates []codec.Support `json:"candidates,omitempty"`
+	ReadFrom   []string        `json:"readFrom,omitempty"` // verdict: techniques that agree
 }
 
 type Report struct {
 	Rows         int      `json:"rows"`
 	Columns      []string `json:"columns"`
 	ResolvedRows int      `json:"resolvedRows"`
-	Results      []Result `json:"results"`
-	Verdict      Result   `json:"verdict"`
+	// MatchesSource is set when every row is identical to the unmarked source.
+	MatchesSource bool     `json:"matchesSource"`
+	Results       []Result `json:"results"`
+	Verdict       Result   `json:"verdict"`
 }
 
 // Registry is everything the issuer keeps: the key, the unmarked source and
@@ -70,52 +76,103 @@ func (r *Registry) Detect(leaked *Table) Report {
 		r.detectRedaction(leaked, pks),
 		r.detectDummy(leaked, pks),
 	}
-	rep.Verdict = verdict(rep.Results)
+	rep.MatchesSource = len(leaked.Rows) > 0 && r.sourceRows(leaked) == len(leaked.Rows)
+	rep.Verdict = verdict(rep.Results, rep.MatchesSource)
 	return rep
 }
 
-func verdict(results []Result) Result {
+// verdict pools the techniques. One recipient named by any technique is an
+// attribution; several recipients named by techniques that each stand on
+// their own is what merged or colluding copies look like, and is reported as
+// such rather than as "inconclusive".
+func verdict(results []Result, matchesSource bool) Result {
 	v := Result{Technique: "verdict", Name: "Overall"}
-	who := map[string][]string{}
-	var order []string
+	var claims []codec.Claim
 	for _, res := range results {
-		if res.Status == "attributed" {
-			if _, seen := who[res.Recipient]; !seen {
-				order = append(order, res.Recipient)
+		switch {
+		case res.Status == "attributed":
+			claims = append(claims, codec.Claim{Layer: res.Name, MarkID: res.MarkID, Recipient: res.Recipient, Strength: codec.Attributed})
+		case len(res.Candidates) > 0:
+			for _, c := range res.Candidates {
+				claims = append(claims, codec.Claim{Layer: res.Name, MarkID: c.MarkID, Recipient: c.Recipient, Strength: codec.Attributed})
 			}
-			who[res.Recipient] = append(who[res.Recipient], res.Name)
+		case res.Decision != nil:
+			if best, ok := res.Decision.Leaning(); ok {
+				claims = append(claims, codec.Claim{Layer: res.Name, MarkID: best.MarkID, Recipient: best.Recipient, Strength: codec.Leaning})
+			}
 		}
 	}
-	switch len(order) {
-	case 0:
-		v.Status = "inconclusive"
-		v.Detail = "No technique could identify a recipient."
-		for _, res := range results {
-			if res.Status == "inconclusive" {
-				return v
+	named := ""
+	for _, c := range claims {
+		if c.Strength == codec.Attributed {
+			named = c.MarkID
+			break
+		}
+	}
+	groups, conflict := codec.Reconcile(named, true, claims)
+	standing := 0
+	for _, g := range groups {
+		if g.Strength == codec.Attributed.String() {
+			standing++
+		}
+	}
+	switch {
+	case conflict && standing >= 2:
+		v.Status = "merged"
+		v.Candidates = nil
+		var parts []string
+		for _, g := range groups {
+			if g.Strength == codec.Attributed.String() {
+				v.Candidates = append(v.Candidates, g)
+				parts = append(parts, fmt.Sprintf("%s (%s)", g.MarkID, g.Recipient))
 			}
 		}
+		v.Detail = "Rows from several recipients' copies are present: " + strings.Join(parts, ", ") + ". The copies were merged, or the recipients shared data with each other."
+	case standing == 1:
+		g := groups[0]
+		v.Status, v.MarkID, v.Recipient = "attributed", g.MarkID, g.Recipient
+		v.ReadFrom = codec.Agreeing(g.MarkID, groups)
+		v.Detail = "Identified by " + strings.Join(v.ReadFrom, ", ") + "."
+	case matchesSource:
+		v.Status = "absent"
+		v.Detail = "Every row is identical to the unmarked source, so this is the source itself or a part of it, not an issued copy."
+	default:
 		v.Status = "absent"
 		v.Detail = "No mark survives. Either this data was not issued here, or every layer was destroyed."
-	case 1:
-		v.Status = "attributed"
-		v.Recipient = order[0]
 		for _, res := range results {
-			if res.Recipient == order[0] {
-				v.MarkID = res.MarkID
-				break
+			if res.Status == "inconclusive" {
+				v.Status = "inconclusive"
+				v.Detail = "No technique could identify a recipient."
 			}
 		}
-		v.Detail = "Identified by " + strings.Join(who[order[0]], ", ") + "."
-	default:
-		v.Status = "inconclusive"
-		var parts []string
-		for _, o := range order {
-			parts = append(parts, o+": "+strings.Join(who[o], ", "))
-		}
-		v.Detail = "Techniques disagree, which suggests several copies were merged: " + strings.Join(parts, "; ")
 	}
 	return v
+}
+
+// sourceRows counts the leaked rows identical to a row of the unmarked
+// source, on the columns the file has.
+func (r *Registry) sourceRows(leaked *Table) int {
+	idx := make([]int, len(leaked.Columns))
+	for i, c := range leaked.Columns {
+		if idx[i] = r.Master.Col(c); idx[i] < 0 {
+			return 0
+		}
+	}
+	all := make([]int, len(leaked.Columns))
+	for i := range all {
+		all[i] = i
+	}
+	set := make(map[[32]byte]struct{}, len(r.Master.Rows))
+	for _, row := range r.Master.Rows {
+		set[rowHash(row, idx)] = struct{}{}
+	}
+	n := 0
+	for _, row := range leaked.Rows {
+		if _, ok := set[rowHash(row, all)]; ok {
+			n++
+		}
+	}
+	return n
 }
 
 // resolveKeys maps each leaked row back to the value its marks were derived
@@ -227,9 +284,9 @@ func project(row []string, t *Table, names []string) string {
 // plural renders a count with the matching noun.
 func plural(n int, one, many string) string {
 	if n == 1 {
-		return fmt.Sprintf("%d %s", n, one)
+		return "1 " + one
 	}
-	return fmt.Sprintf("%d %s", n, many)
+	return thousands(n) + " " + many
 }
 
 func rowHash(row []string, idx []int) [32]byte {
@@ -289,9 +346,17 @@ func (r *Registry) detectExact(leaked *Table) Result {
 	sort.SliceStable(hits, func(i, j int) bool { return hits[i].n > hits[j].n })
 	n := len(leaked.Rows)
 	master := count(r.Master)
-	if len(hits) == 0 || hits[0].n == 0 {
+	switch {
+	case master == n && n > 0:
 		res.Status = "absent"
-		res.Detail = fmt.Sprintf("No row is identical to an issued copy, and %d match the unmarked source. The data was changed, so see the fuzzy stages.", master)
+		res.Detail = fmt.Sprintf("Every one of the %s is identical to the unmarked source, and no row is unique to an issued copy.", countNoun(n, "row", "rows"))
+		return res
+	case len(hits) == 0 || hits[0].n == 0:
+		res.Status = "absent"
+		res.Detail = fmt.Sprintf("No row is identical to an issued copy, and %s of %s match the unmarked source.", thousands(master), countNoun(n, "row", "rows"))
+		if master < n {
+			res.Detail += " The rest were changed, so see the fuzzy stages."
+		}
 		return res
 	}
 	second := 0
@@ -299,7 +364,8 @@ func (r *Registry) detectExact(leaked *Table) Result {
 		second = hits[1].n
 	}
 	best := hits[0]
-	res.Detail = fmt.Sprintf("%d of %d rows are identical to the copy issued as %s. Next best copy: %d rows. Unmarked source: %d rows.", best.n, n, codec.FormatID(best.id), second, master)
+	res.Detail = fmt.Sprintf("%s of %s are identical to the copy issued as %s. Next best copy: %s. Unmarked source: %s.",
+		thousands(best.n), countNoun(n, "row", "rows"), codec.FormatID(best.id), countNoun(second, "row", "rows"), countNoun(master, "row", "rows"))
 	if best.n*2 >= n && best.n-second >= max(3, n/20) {
 		res.Status = "attributed"
 		res.MarkID = codec.FormatID(best.id)
@@ -400,7 +466,7 @@ func (r *Registry) detectCanaries(leaked *Table) Result {
 	switch len(found) {
 	case 0:
 		res.Status = "absent"
-		res.Detail = fmt.Sprintf("None of the %d issued canary rows appear in these %d rows.", total, len(leaked.Rows))
+		res.Detail = sayf("None of the %d issued canary rows appear in these %d rows.", total, len(leaked.Rows))
 	case 1:
 		for id, hits := range found {
 			per := 0
@@ -412,17 +478,26 @@ func (r *Registry) detectCanaries(leaked *Table) Result {
 			res.Status = "attributed"
 			res.MarkID = codec.FormatID(id)
 			res.Recipient = r.label(id)
-			res.Confidence = fmt.Sprintf("%d of %d canary rows present", len(hits), per)
+			res.Confidence = sayf("%d of %d canary rows present", len(hits), per)
 			res.Detail = fmt.Sprintf("Found %s issued only to %s. A small sample may contain none.", plural(len(hits), "canary row", "canary rows"), codec.FormatID(id))
 		}
 	default:
+		// Each canary row was issued to one recipient only, so every one found
+		// names its recipient on its own: several means merged copies.
 		res.Status = "inconclusive"
 		var parts []string
-		for id, hits := range found {
-			parts = append(parts, fmt.Sprintf("%s (%d rows)", codec.FormatID(id), len(hits)))
+		ids := make([]uint16, 0, len(found))
+		for id := range found {
+			ids = append(ids, id)
 		}
-		sort.Strings(parts)
-		res.Detail = "Canary rows from several recipients are present, which suggests merged copies: " + strings.Join(parts, ", ")
+		sort.Slice(ids, func(i, j int) bool {
+			return len(found[ids[i]]) > len(found[ids[j]]) || len(found[ids[i]]) == len(found[ids[j]]) && ids[i] < ids[j]
+		})
+		for _, id := range ids {
+			parts = append(parts, fmt.Sprintf("%s, %s (%s)", codec.FormatID(id), r.label(id), countNoun(len(found[id]), "row", "rows")))
+			res.Candidates = append(res.Candidates, codec.Support{MarkID: codec.FormatID(id), Recipient: r.label(id), Layers: []string{res.Name}, Strength: codec.Attributed.String()})
+		}
+		res.Detail = "Canary rows from several recipients are present, which means merged copies: " + strings.Join(parts, "; ") + "."
 	}
 	return res
 }
@@ -477,7 +552,7 @@ func (r *Registry) detectLowBit(leaked *Table, pks []string) Result {
 	case present == 0:
 		res.Detail = "All tolerant columns were dropped, so there is nothing to read."
 	case cells == 0 && lostPrecision > 0:
-		res.Detail = fmt.Sprintf("%d marked cells lost the precision that carried the mark.", lostPrecision)
+		res.Detail = sayf("%d marked cells lost the precision that carried the mark.", lostPrecision)
 	case cells == 0:
 		res.Detail = "No rows could be matched against the source, so marked cells cannot be located."
 	default:
@@ -485,10 +560,10 @@ func (r *Registry) detectLowBit(leaked *Table, pks []string) Result {
 		if d.DecodedInLog {
 			inLog = "in the issuance log"
 		}
-		res.Detail = fmt.Sprintf("Read %d marked cells. Recovered %d of %d bits, decoded %s (%s), %d bit errors against the closest copy.",
+		res.Detail = sayf("Read %d marked cells. Recovered %d of %d bits, decoded %s (%s), %d bit errors against the closest copy.",
 			cells, d.BitsObserved, codec.CodeLen, d.DecodedID, inLog, d.BitErrors)
 		if lostPrecision > 0 {
-			res.Detail += fmt.Sprintf(" %d cells had their precision removed.", lostPrecision)
+			res.Detail += sayf(" %d cells had their precision removed.", lostPrecision)
 		}
 		res.Confidence = codec.FormatProb(d.FalseProb)
 	}
@@ -527,15 +602,15 @@ func (r *Registry) detectDummy(leaked *Table, pks []string) Result {
 	}
 	if valid == 0 {
 		res.Status = "absent"
-		res.Detail = fmt.Sprintf("Column %s is present, but no value verifies against the key across %d matched rows.", r.Schema.Dummy, readable)
+		res.Detail = sayf("Column %s is present, but no value verifies against the key across %d matched rows.", r.Schema.Dummy, readable)
 		return res
 	}
-	res.Detail = fmt.Sprintf("%d of %d matched rows carry a valid code, %d of them decode to %s.", valid, readable, bestN, codec.FormatID(best))
+	res.Detail = sayf("%d of %d matched rows carry a valid code, %d of them decode to %s.", valid, readable, bestN, codec.FormatID(best))
 	if lbl := r.label(best); lbl != "" && bestN >= 3 && bestN*10 >= valid*6 {
 		res.Status = "attributed"
 		res.MarkID = codec.FormatID(best)
 		res.Recipient = lbl
-		res.Confidence = fmt.Sprintf("%d rows agree, each with a 1-in-100 check value", bestN)
+		res.Confidence = sayf("%d rows agree, each with a 1-in-100 check value", bestN)
 	} else {
 		res.Status = "inconclusive"
 	}

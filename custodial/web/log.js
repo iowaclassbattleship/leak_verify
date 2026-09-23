@@ -28,24 +28,24 @@ function renderLog(st) {
     box.replaceChildren(el('div', { class: 'empty', text: 'Nothing issued in this scope yet.' }));
     return;
   }
-  box.replaceChildren(el('div', { class: 'tablewrap' }, el('table', {},
+  const docName = (e) => e.document || (e.source || '').replace(/, \d+ pages?$/, '') || '';
+  box.replaceChildren(el('div', { class: 'tablewrap scroll-hint' }, el('table', { class: 'log' },
     el('thead', {}, el('tr', {},
-      ['Mark', 'Recipient', 'Role', 'Unit', 'Issued', 'By', 'Layers', 'File', ''].map((h) => el('th', { text: h })))),
+      ['Mark', 'Recipient', 'Document', 'Issued', 'Layers', 'File', ''].map((h) => el('th', { text: h })))),
     el('tbody', {}, st.log.map((e) => el('tr', {},
       el('td', {}, e.markId === 'restricted'
         ? el('span', { class: 'muted', text: 'restricted' })
-        : el('b', { text: e.markId })),
-      el('td', { text: e.name }),
-      el('td', { class: 'muted', text: e.role }),
-      el('td', { class: 'muted', text: unitName(st.units, e.unit) }),
-      el('td', { class: 'muted', text: new Date(e.issuedAt).toLocaleString() }),
-      el('td', { class: 'muted', text: e.issuedBy || '' }),
-      el('td', { class: 'muted', text: Object.entries(e.layers || {}).filter(([, v]) => v).map(([k]) => k).join(', ') }),
-      el('td', { class: 'muted', text: e.fileName }),
+        : el('b', { class: 'mono', text: e.markId })),
+      el('td', {}, el('b', { text: e.name }), el('small', { class: 'muted sub', text: `${e.role} · ${unitName(st.units, e.unit)}` })),
+      el('td', { class: 'wrap', text: docName(e) }),
+      el('td', {}, new Date(e.issuedAt).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }),
+        e.issuedBy ? el('small', { class: 'muted sub', text: `by ${e.issuedBy}` }) : null),
+      el('td', { class: 'muted wrap', text: Object.entries(e.layers || {}).filter(([, v]) => v).map(([k]) => k).join(', ') }),
+      el('td', { class: 'muted wrap mono', text: e.fileName }),
       el('td', {}, e.markId === 'restricted'
         ? null
         : el('button', {
-            class: 'recall', type: 'button', title: `Recall ${e.markId}`, text: '\u00d7',
+            class: 'recall', type: 'button', title: `Recall ${e.markId}`, 'aria-label': `Recall ${e.markId}`, text: '\u00d7',
             onclick: () => recall(e),
           }))))))));
 }

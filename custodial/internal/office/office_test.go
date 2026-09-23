@@ -62,7 +62,7 @@ func TestMarkAndDetect(t *testing.T) {
 				ids = append(ids, is.ID)
 			}
 			id := key.AllocateID(ids)
-			tag := fmt.Sprintf("MK-%04X.test", id)
+			tag := key.Tag(id)
 			tile, err := eng.WatermarkTilePNG(key.Encode(id))
 			if err != nil {
 				t.Fatal(err)
@@ -199,8 +199,8 @@ func TestCopiesDiffer(t *testing.T) {
 		eng := document.NewEngine(key)
 		ta, _ := eng.WatermarkTilePNG(key.Encode(1))
 		tb, _ := eng.WatermarkTilePNG(key.Encode(40000))
-		a, _ := src.Mark(key, key.Encode(1), "MK-0001.a", allLayers, ta)
-		b, _ := src.Mark(key, key.Encode(40000), "MK-9C40.b", allLayers, tb)
+		a, _ := src.Mark(key, key.Encode(1), key.Tag(1), allLayers, ta)
+		b, _ := src.Mark(key, key.Encode(40000), key.Tag(40000), allLayers, tb)
 		if string(a) == string(b) {
 			t.Errorf("%s: two recipients got identical files", filepath.Base(path))
 		}
@@ -256,7 +256,7 @@ func TestBuiltInDocument(t *testing.T) {
 	copies := map[uint16][]byte{}
 	for i := 0; i < 5; i++ {
 		id := key.AllocateID(nil)
-		tag := fmt.Sprintf("MK-%04X.t", id)
+		tag := key.Tag(id)
 		tile, err := eng.WatermarkTilePNG(key.Encode(id))
 		if err != nil {
 			t.Fatal(err)

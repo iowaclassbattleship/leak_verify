@@ -18,12 +18,18 @@ type Result struct {
 	Technique  string          `json:"technique"`
 	Name       string          `json:"name"`
 	Survives   string          `json:"survives"`
-	Status     string          `json:"status"` // attributed | inconclusive | absent | n/a
+	Status     string          `json:"status"` // attributed | inconclusive | absent | n/a | invalid; the verdict may also be conflict
 	MarkID     string          `json:"markId,omitempty"`
 	Recipient  string          `json:"recipient,omitempty"`
 	Confidence string          `json:"confidence,omitempty"`
 	Detail     string          `json:"detail"`
 	Decision   *codec.Decision `json:"decision,omitempty"`
+
+	// Verdict only.
+	ReadFrom   []string        `json:"readFrom,omitempty"`   // layers that agree with the named recipient
+	Candidates []codec.Support `json:"candidates,omitempty"` // every recipient some layer points at
+	Warnings   []string        `json:"warnings,omitempty"`
+	Weak       bool            `json:"weak,omitempty"`
 }
 
 type Report struct {
@@ -96,12 +102,7 @@ func (e *Engine) Detect(m *Master, issued []Issued, data []byte) (Report, error)
 }
 
 // plural renders a count with the matching noun, e.g. "1 page" or "3 pages".
-func plural(n int, one, many string) string {
-	if n == 1 {
-		return fmt.Sprintf("%d %s", n, one)
-	}
-	return fmt.Sprintf("%d %s", n, many)
-}
+func plural(n int, one, many string) string { return codec.Plural(n, one, many) }
 
 // bitSummary reports how much of the codeword a layer recovered.
 func bitSummary(d *codec.Decision) string {
@@ -136,14 +137,27 @@ func (e *Engine) detectPDF(m *Master, issued []Issued, data []byte) (Report, err
 	// Metadata
 	meta := newResult("metadata")
 	if tag, ok := f.Info["LAPRef"]; ok {
-		meta.Status = "inconclusive"
-		meta.Detail = fmt.Sprintf("Document properties carry the tag %q, but its check value does not verify.", tag)
+		id, parsed, valid := e.Key.ParseTag(tag)
+		label := ""
 		for _, is := range issued {
-			if e.MetaTag(is.ID) == tag {
-				meta.Status, meta.MarkID, meta.Recipient = "attributed", codec.FormatID(is.ID), is.Label
-				meta.Confidence = "Check value verifies"
-				meta.Detail = "Valid tag in the document properties. This layer is easily stripped or copied into another file, so it is weak on its own."
+			if parsed && is.ID == id {
+				label = is.Label
 			}
+		}
+		switch {
+		case !valid:
+			meta.Status, meta.Confidence = "invalid", "Tampered"
+			meta.Detail = fmt.Sprintf("Document properties carry %q, but its check value does not verify. The tag was edited or forged, so it is evidence of tampering, not of who the file belongs to.", tag)
+			if label != "" {
+				meta.Detail = fmt.Sprintf("Document properties carry %q, which claims %s (%s), but its check value does not verify. The tag was edited or forged, so it is evidence of tampering, not of who the file belongs to.", tag, codec.FormatID(id), label)
+			}
+		case label == "":
+			meta.Status = "inconclusive"
+			meta.Detail = fmt.Sprintf("Document properties carry a genuine tag, %s, but that mark is not in the issuance log. It may have been recalled.", codec.FormatID(id))
+		default:
+			meta.Status, meta.MarkID, meta.Recipient = "attributed", codec.FormatID(id), label
+			meta.Confidence = "Check value verifies"
+			meta.Detail = "Valid tag in the document properties. This layer is easily stripped or copied into another file, so it is weak on its own."
 		}
 	} else {
 		meta.Status = "absent"
@@ -249,6 +263,7 @@ func (e *Engine) detectText(m *Master, issued []Issued, text string) Report {
 		absent("metadata", "Plain text has no document properties."),
 	}
 	rep.Verdict = e.combine(issued, rep.Results, nil)
+	rep.Verdict.Detail = "A PDF copy carries no mark in its text: every PDF layer lives in the page layout, the background or the document properties, so text copied out of a PDF cannot be traced. Where copy and paste matters, issue a Word or PowerPoint file with the invisible-character layer on."
 	return rep
 }
 
@@ -552,7 +567,8 @@ func (e *Engine) detectImage(m *Master, issued []Issued, img image.Image) Report
 
 // combine pools the codeword evidence of every layer that yielded a signal.
 // Each layer is normalised to equal weight so the dense tint grid cannot
-// drown the sparser layers.
+// drown the sparser layers. Layers that point at different recipients are
+// reported as a conflict rather than outvoted.
 func (e *Engine) combine(issued []Issued, results []Result, votes map[string]codec.Votes) Result {
 	v := Result{Technique: "combined", Name: "Combined verdict"}
 	var pooled codec.Votes
@@ -569,23 +585,17 @@ func (e *Engine) combine(issued []Issued, results []Result, votes map[string]cod
 		}
 		used = append(used, r.Name)
 	}
-	var attributedBy []string
-	who := map[string]bool{}
-	for _, r := range results {
-		if r.Status == "attributed" {
-			attributedBy = append(attributedBy, r.Name+": "+r.Recipient)
-			who[r.Recipient] = true
-		}
-	}
 	if len(used) > 0 {
 		e.decide(&v, pooled, candidates(issued, func(Layers) bool { return true }), 1)
 		v.Detail = "Evidence pooled from " + strings.Join(used, ", ") + "."
 	}
-	if v.Status != "attributed" {
+	fromBits := v.Status == "attributed"
+	if !fromBits {
 		for _, r := range results {
 			if r.Technique == "metadata" && r.Status == "attributed" {
 				v.Status, v.MarkID, v.Recipient = "attributed", r.MarkID, r.Recipient
 				v.Confidence = "Weak evidence"
+				v.Weak = true
 				v.Detail = "Only the metadata tag identifies this file. It is easily copied or forged, so confirm it another way."
 			}
 		}
@@ -594,8 +604,32 @@ func (e *Engine) combine(issued []Issued, results []Result, votes map[string]cod
 		v.Status = "absent"
 		v.Detail = "No layer produced a signal."
 	}
-	if len(who) > 1 {
-		v.Detail += " Layers disagree (" + strings.Join(attributedBy, "; ") + "), which can mean merged copies or a forged tag."
+
+	var claims []codec.Claim
+	for _, r := range results {
+		switch {
+		case r.Status == "attributed" && r.Technique == "metadata":
+			claims = append(claims, codec.Claim{Layer: r.Name, MarkID: r.MarkID, Recipient: r.Recipient, Strength: codec.Stored})
+		case r.Status == "attributed":
+			claims = append(claims, codec.Claim{Layer: r.Name, MarkID: r.MarkID, Recipient: r.Recipient, Strength: codec.Attributed})
+		case r.Decision != nil:
+			if best, ok := r.Decision.Leaning(); ok {
+				claims = append(claims, codec.Claim{Layer: r.Name, MarkID: best.MarkID, Recipient: best.Recipient, Strength: codec.Leaning})
+			}
+		}
+		if r.Status == "invalid" {
+			v.Warnings = append(v.Warnings, r.Name+": the stored tag fails its check value, so someone edited it.")
+		}
+	}
+	groups, conflict := codec.Reconcile(v.MarkID, fromBits, claims)
+	if conflict {
+		v.Status, v.MarkID, v.Recipient, v.Weak, v.Confidence = "conflict", "", "", false, ""
+		v.Candidates = groups
+		v.Detail = "The layers point at different recipients. A tag was edited or copied from another copy, or copies were merged. The metadata tag is easy to change; the layout, frequency and tint layers are much harder to forge."
+		return v
+	}
+	if v.Status == "attributed" {
+		v.ReadFrom = codec.Agreeing(v.MarkID, groups)
 	}
 	return v
 }

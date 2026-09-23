@@ -22,6 +22,7 @@ type loggedIssuance struct {
 	Layers   map[string]bool `json:"layers"`
 	FileName string          `json:"fileName"`
 	Source   string          `json:"source"`
+	Document string          `json:"document,omitempty"`
 }
 
 func (s *Server) loadLog() {
@@ -35,7 +36,7 @@ func (s *Server) loadLog() {
 			id: e.ID, tag: e.Tag, Restored: true,
 			MarkID: e.MarkID, Name: e.Name, Role: e.Role, Unit: e.Unit,
 			IssuedAt: e.IssuedAt, IssuedBy: e.IssuedBy, Layers: e.Layers,
-			FileName: e.FileName, Source: e.Source,
+			FileName: e.FileName, Source: e.Source, Document: e.Document,
 		})
 	}
 }
@@ -47,7 +48,7 @@ func (s *Server) saveLog() {
 			ID: is.id, MarkID: is.MarkID, Tag: is.tag,
 			Name: is.Name, Role: is.Role, Unit: is.Unit,
 			IssuedAt: is.IssuedAt, IssuedBy: is.IssuedBy, Layers: is.Layers,
-			FileName: is.FileName, Source: is.Source,
+			FileName: is.FileName, Source: is.Source, Document: is.Document,
 		})
 	}
 	if err := s.store.Save(s.user, "custodial", entries); err != nil {

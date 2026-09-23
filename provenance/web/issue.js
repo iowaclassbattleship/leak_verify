@@ -5,6 +5,16 @@ import { $, el, api, apiURL, busy, toast } from './common.js';
 // decoded mark back into a name.
 
 let people = [];
+let copiesIssued = 0;
+let units = [];
+
+// issuedCount is how many copies of the loaded table are out, so the column
+// roles are not changed under them without a warning.
+export function issuedCount() {
+  return copiesIssued;
+}
+
+const unitName = (id) => units.find((u) => u.id === id)?.name || id;
 
 function renderPeople() {
   $('#issue-empty').hidden = people.length > 0;
@@ -12,7 +22,7 @@ function renderPeople() {
   $('#issue-create').textContent = people.length > 1 ? `Issue ${people.length} copies` : 'Issue copy';
   $('#issue-list').replaceChildren(...people.map((p, i) =>
     el('div', { class: 'item' },
-      el('span', { class: 'who' }, el('b', { text: p.name }), p.org ? el('small', { text: p.org }) : null),
+      el('span', { class: 'who' }, el('b', { text: p.name }), el('small', { text: [p.org, unitName(p.unit)].filter(Boolean).join(' · ') })),
       el('button', { class: 'link', type: 'button', text: 'remove', onclick: () => { people.splice(i, 1); renderPeople(); } }))));
 }
 
@@ -24,9 +34,15 @@ async function refreshCopies() {
   try {
     const st = await api('/api/state');
     copies = (st.issued || []).filter((c) => c.recipient !== markTabCopy);
+    if (!units.length) {
+      units = (st.units || []).filter((u) => u.parent);
+      $('#issue-add').elements.unit.replaceChildren(...units.map((u) => el('option', { value: u.id, text: u.name })));
+      $('#issue-add').elements.unit.value = 'external';
+    }
   } catch {
     return;
   }
+  copiesIssued = copies.length;
   if (copies.length === 0) {
     box.replaceChildren();
     return;
@@ -34,7 +50,8 @@ async function refreshCopies() {
   box.replaceChildren(
     el('h4', { text: copies.length > 1 ? `${copies.length} copies issued` : 'Copy issued' }),
     ...copies.map((c) => el('div', { class: 'copy' },
-      el('span', { class: 'who' }, el('b', { text: c.recipient }), c.org ? el('small', { class: 'muted', text: c.org }) : null),
+      el('span', { class: 'who' }, el('b', { text: c.recipient }),
+        el('small', { class: 'muted', text: [c.org, unitName(c.unit), `issued ${new Date(c.issuedAt).toLocaleDateString()}`].filter(Boolean).join(' · ') })),
       el('span', { class: 'fname', text: c.fileName }),
       el('span', { class: 'muted small' }, 'mark ', el('span', { class: 'mono', text: c.markId })),
       el('a', { class: 'button', href: apiURL(`/api/copy?mark=${c.markId}`), download: c.fileName, text: 'Download' }),
@@ -80,10 +97,20 @@ export function initIssue(measures) {
     e.preventDefault();
     // form.elements, because form.name is the form's own name attribute.
     const f = e.target.elements;
-    const name = f.name.value.trim();
-    if (!name) return;
-    people.push({ name, org: f.org.value.trim() });
-    e.target.reset();
+    const name = f.name.value.trim().replace(/\s+/g, ' ');
+    const org = f.org.value.trim();
+    const error = $('#issue-add-error');
+    const twin = people.find((p) => p.name.localeCompare(name, undefined, { sensitivity: 'base' }) === 0 && p.org === org);
+    error.textContent = !name ? 'Enter a name or organisation.'
+      : twin ? `${name} is already on the list${org ? ` for ${org}` : ''}. Give a different purpose if this is a second copy.` : '';
+    error.hidden = !error.textContent;
+    if (error.textContent) {
+      f.name.focus();
+      return;
+    }
+    people.push({ name, org, unit: f.unit.value });
+    f.name.value = '';
+    f.org.value = '';
     f.name.focus();
     renderPeople();
   });

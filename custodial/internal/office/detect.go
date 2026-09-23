@@ -77,12 +77,18 @@ type Result struct {
 	Technique  string          `json:"technique"`
 	Name       string          `json:"name"`
 	Survives   string          `json:"survives"`
-	Status     string          `json:"status"`
+	Status     string          `json:"status"` // attributed | inconclusive | absent | invalid; the verdict may also be conflict
 	MarkID     string          `json:"markId,omitempty"`
 	Recipient  string          `json:"recipient,omitempty"`
 	Confidence string          `json:"confidence,omitempty"`
 	Detail     string          `json:"detail"`
 	Decision   *codec.Decision `json:"decision,omitempty"`
+
+	// Verdict only.
+	ReadFrom   []string        `json:"readFrom,omitempty"`   // layers that agree with the named recipient
+	Candidates []codec.Support `json:"candidates,omitempty"` // every recipient some layer points at
+	Warnings   []string        `json:"warnings,omitempty"`
+	Weak       bool            `json:"weak,omitempty"`
 }
 
 type Report struct {
@@ -137,12 +143,7 @@ func bitSummary(d *codec.Decision) string {
 	return fmt.Sprintf("Recovered %d of %d bits, %s.", d.BitsObserved, codec.CodeLen, plural(d.BitErrors, "error", "errors"))
 }
 
-func plural(n int, one, many string) string {
-	if n == 1 {
-		return fmt.Sprintf("%d %s", n, one)
-	}
-	return fmt.Sprintf("%d %s", n, many)
-}
+func plural(n int, one, many string) string { return codec.Plural(n, one, many) }
 
 // TileReader reads a watermark tile lifted out of a package. The office
 // package holds no imaging code, so the caller supplies this.
@@ -179,11 +180,11 @@ func Detect(key codec.Key, data []byte, issued []Issued, readTile TileReader) (R
 		text.Detail = fmt.Sprintf("Read %d of %s that can carry the mark. %s", marked, plural(slots, "word", "words"), bitSummary(text.Decision))
 	}
 
-	meta := tagResult("metadata", f.property(), issued,
+	meta := tagResult(key, "metadata", f.property(), issued,
 		"No marking property in the document properties.",
 		"Valid marking property. It is easily inspected and removed, so it is weak on its own.")
 
-	custom := tagResult("customxml", f.customXML(), issued,
+	custom := tagResult(key, "customxml", f.customXML(), issued,
 		"No marking part in the package.",
 		"Valid marking part. The text was never touched, so editing the document does not disturb it.")
 
@@ -213,23 +214,47 @@ func Detect(key codec.Key, data []byte, issued []Issued, readTile TileReader) (R
 
 // tagResult checks a stored tag against the issuance log. The tag carries a
 // keyed check value, so a forged or edited one does not verify.
-func tagResult(tech, tag string, issued []Issued, absent, valid string) Result {
+func tagResult(key codec.Key, tech, tag string, issued []Issued, absent, valid string) Result {
 	res := newResult(tech)
 	res.Status = "absent"
 	res.Detail = absent
 	if tag == "" {
 		return res
 	}
-	res.Status = "inconclusive"
-	res.Detail = fmt.Sprintf("The file carries %q, but its check value does not verify.", tag)
+	id, ok, verifies := key.ParseTag(tag)
+	if !verifies {
+		res.Status = "invalid"
+		res.Confidence = "Tampered"
+		switch {
+		case !ok:
+			res.Detail = fmt.Sprintf("The file carries %q, which is not a tag this system writes. It was edited or planted.", tag)
+		case issuedLabel(issued, id) != "":
+			res.Detail = fmt.Sprintf("The file carries %q, which claims %s (%s), but its check value does not verify. The tag was edited or forged, so it is evidence of tampering, not of who the file belongs to.", tag, codec.FormatID(id), issuedLabel(issued, id))
+		default:
+			res.Detail = fmt.Sprintf("The file carries %q, but its check value does not verify. The tag was edited or forged.", tag)
+		}
+		return res
+	}
 	for _, is := range issued {
-		if is.Tag == tag {
+		if is.ID == id {
 			res.Status, res.MarkID, res.Recipient = "attributed", codec.FormatID(is.ID), is.Label
 			res.Confidence = "Check value verifies"
 			res.Detail = valid
+			return res
 		}
 	}
+	res.Status = "inconclusive"
+	res.Detail = fmt.Sprintf("The file carries a genuine tag, %s, but that mark is not in the issuance log. It may have been recalled.", codec.FormatID(id))
 	return res
+}
+
+func issuedLabel(issued []Issued, id uint16) string {
+	for _, is := range issued {
+		if is.ID == id {
+			return is.Label
+		}
+	}
+	return ""
 }
 
 // DetectText reads the only carrier that survives copied-out text.
@@ -287,6 +312,8 @@ func DetectCapture(key codec.Key, input string, v codec.Votes, note string, ok b
 
 // combine pools the evidence of every carrier that produced a signal. Each is
 // normalised to equal weight so a dense carrier cannot drown a sparse one.
+// Carriers that point at different recipients are reported as a conflict
+// rather than outvoted: that is what a tampered or merged copy looks like.
 func combine(key codec.Key, issued []Issued, results []Result, votes map[string]codec.Votes) Result {
 	v := Result{Technique: "combined", Name: "Combined verdict"}
 	var pooled codec.Votes
@@ -303,23 +330,17 @@ func combine(key codec.Key, issued []Issued, results []Result, votes map[string]
 		}
 		used = append(used, r.Name)
 	}
-	who := map[string]bool{}
-	var by []string
-	for _, r := range results {
-		if r.Status == "attributed" {
-			who[r.Recipient] = true
-			by = append(by, r.Name+": "+r.Recipient)
-		}
-	}
 	if len(used) > 0 {
 		decide(key, &v, pooled, candidates(issued, func(Layers) bool { return true }))
 		v.Detail = "Evidence pooled from " + strings.Join(used, ", ") + "."
 	}
-	if v.Status != "attributed" {
+	fromBits := v.Status == "attributed"
+	if !fromBits {
 		for _, r := range results {
 			if (r.Technique == "metadata" || r.Technique == "customxml") && r.Status == "attributed" {
 				v.Status, v.MarkID, v.Recipient = "attributed", r.MarkID, r.Recipient
 				v.Confidence = "Weak evidence"
+				v.Weak = true
 				v.Detail = "Only a stored tag identifies this file. A tag can be copied from one file to another, so confirm it another way."
 			}
 		}
@@ -328,8 +349,41 @@ func combine(key codec.Key, issued []Issued, results []Result, votes map[string]
 		v.Status = "absent"
 		v.Detail = "No carrier produced a signal."
 	}
-	if len(who) > 1 {
-		v.Detail += " Carriers disagree (" + strings.Join(by, "; ") + "), which can mean merged copies or a forged property."
+
+	var claims []codec.Claim
+	for _, r := range results {
+		switch {
+		case r.Status == "attributed" && (r.Technique == "metadata" || r.Technique == "customxml"):
+			claims = append(claims, codec.Claim{Layer: r.Name, MarkID: r.MarkID, Recipient: r.Recipient, Strength: codec.Stored})
+		case r.Status == "attributed":
+			claims = append(claims, codec.Claim{Layer: r.Name, MarkID: r.MarkID, Recipient: r.Recipient, Strength: codec.Attributed})
+		case r.Decision != nil:
+			if best, ok := r.Decision.Leaning(); ok {
+				claims = append(claims, codec.Claim{Layer: r.Name, MarkID: best.MarkID, Recipient: best.Recipient, Strength: codec.Leaning})
+			}
+		}
+		if r.Status == "invalid" {
+			v.Warnings = append(v.Warnings, r.Name+": the stored tag fails its check value, so someone edited it.")
+		}
+	}
+	groups, conflict := codec.Reconcile(v.MarkID, fromBits, claims)
+	if conflict {
+		v.Status, v.MarkID, v.Recipient, v.Weak = "conflict", "", "", false
+		v.Candidates = groups
+		v.Confidence = ""
+		v.Detail = "The carriers point at different recipients. A tag was edited or copied from another copy, or copies were merged. Stored tags are easy to change; the bit carriers are much harder to forge."
+		return v
+	}
+	if v.Status == "attributed" {
+		v.ReadFrom = codec.Agreeing(v.MarkID, groups)
+		if fromBits && len(v.ReadFrom) == 1 && v.ReadFrom[0] == layerInfo["spacing"][0] {
+			v.Weak = true
+			v.Confidence = "Weak evidence: " + v.Confidence
+			v.Detail += " Only the spacing carrier survives, and it is lost as soon as the runs are retyped, so confirm the result another way."
+		}
+	}
+	if len(v.Warnings) > 0 && v.Status != "attributed" {
+		v.Detail += " A stored tag was tampered with."
 	}
 	return v
 }

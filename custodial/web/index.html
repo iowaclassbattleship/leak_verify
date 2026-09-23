@@ -17,7 +17,9 @@
     <a href="#tag" role="tab" data-tab="tag">Tag</a>
     <a href="#verify" role="tab" data-tab="verify">Verify</a>
     <a href="#log" role="tab" data-tab="log">Log</a>
+    <span class="navsep" aria-hidden="true"></span>
     <span class="user" data-user></span>
+    <form method="post" action="/logout" class="signout"><button type="submit" class="link">Sign out</button></form>
   </nav>
 </header>
 
@@ -46,6 +48,7 @@
                 <img src="/shared/excel.png" alt=""><img src="/shared/pdf.png" alt="">
               </span>
             </label>
+            <div id="tag-upload-error" class="upload-error" role="alert" hidden></div>
             <p class="center small"><button type="button" class="linklike" id="tag-sample">Use a sample document</button></p>
           </div>
 
@@ -80,12 +83,13 @@
           </div>
           <div id="tag-recipients" class="recip-list"></div>
 
-          <form id="tag-add" class="recip-add">
-            <input name="name" placeholder="Name" required>
+          <form id="tag-add" class="recip-add" novalidate>
+            <input name="name" placeholder="Name" aria-describedby="tag-add-error">
             <input name="role" placeholder="Role">
             <select name="unit" aria-label="Unit"></select>
             <button type="submit" class="secondary">Add</button>
           </form>
+          <p id="tag-add-error" class="field-error" role="alert" hidden></p>
 
           <div class="settings">
             <h4>Protection layers <span id="tag-layer-summary" class="muted small"></span></h4>
@@ -131,7 +135,7 @@
       <input id="verify-input" type="file" multiple accept=".pdf,.docx,.pptx,.xlsx,.png,.jpg,.jpeg,.txt">
       <span class="drop-icon" aria-hidden="true">⇩</span>
       <b>Drop files here</b>
-      <span class="muted" id="verify-hint">PDF, PNG or JPEG, up to 25 MB</span>
+      <span class="muted" id="verify-hint">Word, PowerPoint, Excel or PDF, a screenshot or scan (PNG, JPEG), or copied text, up to 25 MB</span>
     </label>
 
     <div id="verify-results" class="verify-results"></div>

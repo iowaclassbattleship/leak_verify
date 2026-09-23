@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -327,4 +328,40 @@ func humanInt(x float64) string {
 		return fmt.Sprintf("10^%.0f", math.Floor(math.Log10(x)))
 	}
 	return fmt.Sprintf("%.0f", x)
+}
+
+// Tag is the stored form of a mark ID, for carriers that hold text rather
+// than bits (document properties, a custom XML part): the ID and a keyed
+// check value, so an edited or invented tag does not verify.
+func (k Key) Tag(id uint16) string {
+	return fmt.Sprintf("%s.%x", FormatID(id), k.Sum("meta", strconv.Itoa(int(id)))[:3])
+}
+
+// ParseTag reads a stored tag back. ok reports whether the text has the shape
+// of a tag at all; valid whether its check value verifies under this key.
+func (k Key) ParseTag(tag string) (id uint16, ok, valid bool) {
+	tag = strings.TrimSpace(tag)
+	var check string
+	if n, err := fmt.Sscanf(tag, "MK-%04X.%s", &id, &check); n != 2 || err != nil {
+		return 0, false, false
+	}
+	return id, true, k.Tag(id) == tag
+}
+
+// Plural renders a count with the matching noun and thousands separators,
+// e.g. "1 page" or "1,650 words", for text a person reads.
+func Plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	s := strconv.Itoa(n)
+	neg := strings.HasPrefix(s, "-")
+	s = strings.TrimPrefix(s, "-")
+	for i := len(s) - 3; i > 0; i -= 3 {
+		s = s[:i] + "," + s[i:]
+	}
+	if neg {
+		s = "-" + s
+	}
+	return s + " " + many
 }

@@ -38,6 +38,12 @@ export async function api(path, { method = 'GET', json, form } = {}) {
   return body;
 }
 
+// countNoun renders a count with the matching noun and thousands separators:
+// "1 row", "18,000 rows".
+export function countNoun(n, one, many) {
+  return `${(n ?? 0).toLocaleString('en')} ${n === 1 ? one : many}`;
+}
+
 let toastTimer;
 export function toast(msg, isError = false) {
   const t = $('#toast');
@@ -117,7 +123,7 @@ export function renderTable(container, columns, rows, { empty = 'No rows.' } = {
     el('tbody', {}, rows.map((r) => el('tr', {}, r.map((v) => el('td', { text: v })))))));
 }
 
-const LABEL = { attributed: 'Attributed', inconclusive: 'Inconclusive', absent: 'Not found', 'n/a': 'n/a', wrong: 'Wrong recipient' };
+const LABEL = { attributed: 'Attributed', inconclusive: 'Inconclusive', absent: 'Not found', 'n/a': 'n/a', wrong: 'Wrong recipient', merged: 'Merged' };
 
 function effectiveStatus(result, truth) {
   if (result.status === 'attributed' && truth && result.markId && result.markId !== truth.markId) return 'wrong';

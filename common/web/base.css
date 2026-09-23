@@ -51,6 +51,7 @@ h4 {
 }
 
 .muted, .dim, .small { color: var(--muted); }
+p { overflow-wrap: anywhere; }
 .small { font-size: 12.5px; }
 .mono, code { font-family: var(--mono); font-size: 12.5px; }
 .center { text-align: center; }
@@ -91,6 +92,9 @@ nav.tabs .signout button:hover { background: none; color: var(--ink); text-decor
 fieldset, .panel {
   border: 0; border-top: 1px solid var(--rule);
   margin: 0 0 28px; padding: 14px 0 0;
+  /* A fieldset grows to fit its widest content by default, which lets a wide
+     table push the whole page sideways. Tables scroll inside .tablewrap. */
+  min-width: 0;
 }
 legend, .panel > header {
   padding: 0; font-size: 11px; font-weight: 500;
@@ -147,9 +151,20 @@ summary { cursor: pointer; }
 
 /* ---- tables ---- */
 
-.tablewrap { overflow-x: auto; }
+.tablewrap { overflow-x: auto; max-width: 100%; }
+/* An edge shadow shows there is more to scroll to, where the platform hides
+   scrollbars until they are used. The covers scroll with the content, so the
+   shadow disappears at either end. */
+.scroll-hint {
+  background:
+    linear-gradient(to right, var(--paper) 30%, transparent) left / 40px 100% no-repeat local,
+    linear-gradient(to left, var(--paper) 30%, transparent) right / 40px 100% no-repeat local,
+    radial-gradient(farthest-side at 0 50%, rgba(0,0,0,.16), transparent) left / 12px 100% no-repeat scroll,
+    radial-gradient(farthest-side at 100% 50%, rgba(0,0,0,.16), transparent) right / 12px 100% no-repeat scroll;
+}
 table { border-collapse: collapse; width: 100%; font: 400 12.5px/1.45 var(--mono); }
 th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+thead th { white-space: normal; min-width: 5em; }
 thead th {
   font: 500 10.5px/1.4 var(--sans); text-transform: uppercase; letter-spacing: .12em;
   color: var(--muted); border-bottom: 1px solid var(--rule); vertical-align: bottom;
@@ -166,6 +181,7 @@ tbody tr:last-child td { border-bottom: 1px solid var(--rule); }
 .tag.attributed, .pill.attributed, .sym.attributed { color: var(--ok); }
 .tag.inconclusive, .pill.inconclusive, .sym.inconclusive { color: var(--warn); }
 .tag.wrong, .pill.wrong, .sym.wrong, .tag.error { color: var(--bad); }
+.pill.invalid, .pill.conflict, .pill.other { color: var(--bad); }
 .tag.absent, .tag.na, .pill.absent, .pill.na, .sym.absent, .sym.na { color: var(--muted); }
 
 /* ---- result cards ---- */
@@ -209,7 +225,10 @@ tbody tr:last-child td { border-bottom: 1px solid var(--rule); }
 
 @media (max-width: 720px) {
   header.top { align-items: flex-start; }
-  nav.tabs { margin-left: 0; gap: 16px; }
+  nav.tabs { margin-left: 0; gap: 8px 16px; flex-wrap: wrap; }
+}
+@media (max-width: 480px) {
+  nav.tabs .user, .navsep { display: none; }
 }
 
 /* ---- home tiles ---- */

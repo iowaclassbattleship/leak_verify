@@ -42,14 +42,40 @@ tr.moved td:first-child { box-shadow: inset 4px 0 0 var(--ink); }
 td.wrap, .wrap { white-space: normal; max-width: 44em; }
 
 /* issuing to recipients */
-.addform { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; margin-top: 12px; }
+.addform { display: grid; grid-template-columns: 1fr 1fr auto auto; gap: 10px; margin-top: 12px; }
 @media (max-width: 620px) { .addform { grid-template-columns: 1fr; } }
 #issue-actions { margin-top: 16px; }
-#issue-copies .copy { display: flex; align-items: baseline; gap: 14px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+#issue-copies .copy { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; padding: 10px 0; border-bottom: 1px solid var(--line); }
 #issue-copies .copy .who { flex: 1; min-width: 0; }
-#issue-copies .copy .fname { font-family: var(--mono); font-size: 12.5px; }
+#issue-copies .copy .fname { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere; min-width: 0; }
 .recall {
   border: 0; background: none; padding: 0 4px; line-height: 1;
   font-size: 19px; color: var(--muted); cursor: pointer;
 }
 .recall:hover { background: none; color: var(--bad); }
+
+/* CSV format and load errors */
+.csv-format { margin-top: 12px; font-size: 13px; }
+.csv-format summary { color: var(--muted); }
+.csv-format .row { margin-top: 10px; }
+.csv-format label { display: inline-flex; gap: 8px; align-items: baseline; }
+.load-error, .field-error { color: var(--bad); font-size: 13px; }
+.load-error { border-left: 3px solid var(--bad); padding: 8px 12px; margin: 12px 0 0; }
+
+/* column roles in the preview header */
+th select.role-select { font-size: 11px; padding: 2px 0; margin-top: 4px; max-width: 11em; }
+th .role-precision { display: block; font-size: 10.5px; font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--muted); }
+#mark-measures label.unavailable { color: var(--muted); }
+#mark-measures label .why { flex-basis: 100%; margin-left: 24px; font-size: 12px; color: var(--warn); }
+
+/* verify */
+.candidates { margin: 6px 0 10px; padding-left: 18px; }
+.candidates li { margin: 4px 0; }
+.result.merged .verdict { color: var(--bad); }
+.who-card { margin: 4px 0 8px; }
+.who-card .purpose { color: var(--muted); }
+
+/* log */
+.grow { flex: 1; }
+#log-table td.wrap { white-space: normal; min-width: 8em; overflow-wrap: anywhere; }
+#log-table .sub { display: block; font-size: 12px; color: var(--muted); }

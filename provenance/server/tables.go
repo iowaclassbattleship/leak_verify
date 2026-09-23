@@ -32,6 +32,9 @@ const sampleTableSource = "Sample account data"
 
 func (s *Server) reset(t *tabular.Table, source, fileBase string) {
 	schema, cols := tabular.DetectSchema(t)
+	if prev := s.loggedSchema(source); prev != nil && prev.Validate(t) == nil {
+		schema = *prev // copies of this table were issued under these roles
+	}
 	s.tab = &tabState{
 		reg:      &tabular.Registry{Key: s.key, Master: t, Schema: schema, Copies: map[uint16]*tabular.Table{}},
 		columns:  cols,
@@ -51,12 +54,91 @@ func (s *Server) issuance(mark string) *tabular.Issuance {
 	return nil
 }
 
+// Unit is a node of the hierarchy recipients are issued to. A viewer sees the
+// log entries for their own subtree; only Data Governance sees the mark IDs
+// that tie a recovered file to a recipient.
+type Unit struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Parent string `json:"parent"`
+}
+
+var units = []Unit{
+	{"gov", "Data Governance", ""},
+	{"research", "Research Partners", "gov"},
+	{"commercial", "Commercial Licensees", "gov"},
+	{"internal", "Internal Analytics", "gov"},
+	{"external", "Other External Recipients", "gov"},
+}
+
+type Viewer struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Unit string `json:"unit"`
+}
+
+var viewers = []Viewer{
+	{"dpo", "Data Protection Officer", "gov"},
+	{"research-lead", "Head of Research Partnerships", "research"},
+	{"licensing-lead", "Head of Data Licensing", "commercial"},
+}
+
+func inSubtree(unit, root string) bool {
+	for u := unit; u != ""; {
+		if u == root {
+			return true
+		}
+		parent := ""
+		for _, x := range units {
+			if x.ID == u {
+				parent = x.Parent
+			}
+		}
+		u = parent
+	}
+	return false
+}
+
 func (s *Server) stateHandler(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t := s.tab.reg.Master
+	viewer := viewers[0]
+	for _, v := range viewers {
+		if v.ID == r.URL.Query().Get("viewer") {
+			viewer = v
+		}
+	}
+	type logEntry struct {
+		MarkID     string             `json:"markId"`
+		Recipient  string             `json:"recipient"`
+		Purpose    string             `json:"purpose"`
+		Unit       string             `json:"unit"`
+		IssuedAt   time.Time          `json:"issuedAt"`
+		FileName   string             `json:"fileName"`
+		Source     string             `json:"source"`
+		Techniques tabular.Techniques `json:"techniques"`
+	}
+	var log []logEntry
+	hidden := 0
+	for _, e := range s.logged {
+		unit := e.Unit
+		if unit == "" {
+			unit = "external"
+		}
+		if !inSubtree(unit, viewer.Unit) {
+			hidden++
+			continue
+		}
+		mark := e.Mark
+		if viewer.Unit != "gov" {
+			mark = "restricted"
+		}
+		log = append(log, logEntry{mark, e.Recipient, e.Org, unit, e.IssuedAt, e.FileName, e.Source, e.Techniques})
+	}
 	webapp.WriteJSON(w, map[string]any{
 		"source":   s.tab.source,
+		"format":   t.Format,
 		"rows":     len(t.Rows),
 		"columns":  s.tab.columns,
 		"preview":  t.Preview(6),
@@ -65,7 +147,24 @@ func (s *Server) stateHandler(w http.ResponseWriter, r *http.Request) {
 		"attacks":  tabular.Battery(s.tab.reg.Schema),
 		"marks":    s.marks(),
 		"hasTable": len(t.Rows) > 0,
+		"units":    units,
+		"viewers":  viewers,
+		"viewer":   viewer,
+		"log":      log,
+		"hidden":   hidden,
 	})
+}
+
+// issued lists the copies handed to real recipients, without the Mark tab's
+// own unassigned copy.
+func (s *Server) issued() []*tabular.Issuance {
+	var out []*tabular.Issuance
+	for _, is := range s.tab.reg.Issued {
+		if is.MarkID != previewID {
+			out = append(out, is)
+		}
+	}
+	return out
 }
 
 func (s *Server) marks() []map[string]string {
@@ -89,20 +188,37 @@ func (s *Server) source(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	t, err := tabular.ParseCSV(bytes.NewReader(data))
+	t, err := tabular.ParseCSVWith(bytes.NewReader(data), formatFrom(r))
 	if err != nil {
 		webapp.WriteErr(w, http.StatusBadRequest, fmt.Sprintf("%s: %v", name, err))
 		return
 	}
 	if len(t.Rows) < 20 {
-		webapp.WriteErr(w, http.StatusBadRequest, "the table needs at least 20 rows to carry a mark")
+		webapp.WriteErr(w, http.StatusUnprocessableEntity, fmt.Sprintf("%s has %s, and a mark needs at least 20", name, plural(len(t.Rows), "row", "rows")))
+		return
+	}
+	if len(t.Columns) < 2 {
+		webapp.WriteErr(w, http.StatusUnprocessableEntity, fmt.Sprintf("%s reads as a single column. Choose the delimiter it uses and load it again.", name))
 		return
 	}
 	s.mu.Lock()
-	s.reset(t, fmt.Sprintf("%s, %s", name, plural(len(t.Rows), "row", "rows")),
-		fileStem(strings.TrimSuffix(filepath.Base(name), filepath.Ext(name))))
+	s.reset(t, name, fileStem(strings.TrimSuffix(filepath.Base(name), filepath.Ext(name))))
 	s.mu.Unlock()
 	s.stateHandler(w, r)
+}
+
+// formatFrom reads a CSV dialect override from the query string: delimiter
+// is one of , ; tab |, and decimal=comma reads 7951,14 as a number.
+func formatFrom(r *http.Request) tabular.Format {
+	var f tabular.Format
+	switch d := r.URL.Query().Get("delimiter"); d {
+	case ",", ";", "|":
+		f.Delimiter = d
+	case "tab", "\t":
+		f.Delimiter = "\t"
+	}
+	f.DecimalComma = r.URL.Query().Get("decimal") == "comma"
+	return f
 }
 
 // tabSchema stores the column roles the data owner confirmed.
@@ -209,6 +325,7 @@ func (s *Server) issue(w http.ResponseWriter, r *http.Request) {
 		Recipients []struct {
 			Name string `json:"name"`
 			Org  string `json:"org"`
+			Unit string `json:"unit"`
 		} `json:"recipients"`
 		Techniques tabular.Techniques `json:"techniques"`
 	}
@@ -234,13 +351,45 @@ func (s *Server) issue(w http.ResponseWriter, r *http.Request) {
 		id := s.key.AllocateID(ids)
 		copyT, is := tabular.MarkCopy(s.key, s.tab.reg.Master, s.tab.reg.Schema, id, req.Techniques)
 		is.Recipient, is.Org, is.IssuedAt = rc.Name, strings.TrimSpace(rc.Org), time.Now()
-		is.FileName = s.tab.fileBase + "_" + fileStem(rc.Name) + ".csv"
+		is.Unit = "external"
+		for _, u := range units {
+			if u.ID == rc.Unit && u.Parent != "" {
+				is.Unit = u.ID
+			}
+		}
+		is.FileName = s.uniqueFileName(rc.Name, is.Org)
 		s.tab.reg.Issued = append(s.tab.reg.Issued, is)
 		s.tab.reg.Copies[id] = copyT
 		out = append(out, is)
 	}
+	if len(out) == 0 {
+		webapp.WriteErr(w, http.StatusBadRequest, "every recipient needs a name")
+		return
+	}
 	s.saveLog()
 	webapp.WriteJSON(w, out)
+}
+
+// uniqueFileName names a copy after the table and the recipient, adding a
+// number when another copy already carries that name, so no download
+// overwrites another.
+func (s *Server) uniqueFileName(name, purpose string) string {
+	stem := s.tab.fileBase + "_" + fileStem(name)
+	for n := 1; ; n++ {
+		file := stem + ".csv"
+		if n > 1 {
+			file = fmt.Sprintf("%s_%d.csv", stem, n)
+		}
+		taken := false
+		for _, is := range s.tab.reg.Issued {
+			if strings.EqualFold(is.FileName, file) {
+				taken = true
+			}
+		}
+		if !taken {
+			return file
+		}
+	}
 }
 
 // recall removes an issuance from the log. The copy already handed over is of
@@ -319,25 +468,45 @@ func (s *Server) bundle(w http.ResponseWriter, r *http.Request) {
 	webapp.SendFile(w, "application/zip", base+"_marked-copies.zip", buf.Bytes(), false)
 }
 
+// detect checks a recovered file against the issuance log. The Mark tab's
+// unassigned copy stands in only while nothing has been issued, so a file is
+// never traced to a mark that nobody received.
 func (s *Server) detect(w http.ResponseWriter, r *http.Request) {
 	data, name, ok := webapp.ReadUpload(w, r)
 	if !ok {
 		return
 	}
-	t, err := tabular.ParseCSV(bytes.NewReader(data))
+	t, err := tabular.ParseCSVWith(bytes.NewReader(data), formatFrom(r))
 	if err != nil {
 		webapp.WriteErr(w, http.StatusBadRequest, fmt.Sprintf("%s: %v", name, err))
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.tab.reg.Issued) == 0 {
+	reg := *s.tab.reg
+	against := "issued"
+	if issued := s.issued(); len(issued) > 0 {
+		reg.Issued = issued
+	} else if len(reg.Issued) > 0 {
+		against = "unassigned"
+	} else {
 		webapp.WriteErr(w, http.StatusBadRequest, "nothing has been marked yet: choose measures on the Mark tab first")
 		return
 	}
+	rep := reg.Detect(t)
+	who := map[string]any{}
+	add := func(mark string) {
+		if is := s.issuance(mark); is != nil && is.MarkID != previewID {
+			who[mark] = map[string]any{"recipient": is.Recipient, "purpose": is.Org, "issuedAt": is.IssuedAt, "fileName": is.FileName, "unit": is.Unit}
+		}
+	}
+	add(rep.Verdict.MarkID)
+	for _, c := range rep.Verdict.Candidates {
+		add(c.MarkID)
+	}
 	webapp.WriteJSON(w, map[string]any{
 		"name": name, "rows": len(t.Rows), "columns": t.Columns, "size": len(data),
-		"preview": t.Preview(6), "report": s.tab.reg.Detect(t),
+		"preview": t.Preview(6), "report": rep, "issuances": who, "against": against,
 	})
 }
 

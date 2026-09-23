@@ -225,8 +225,11 @@ func previewNotes(master *Table, sc Schema, tech Techniques, iss *Issuance, im P
 	var notes []string
 	if tech.Canary {
 		if n := len(iss.Canaries); n > 0 {
-			notes = append(notes, fmt.Sprintf("%d synthetic rows added across the copy, about 1 in %d. No existing value is altered. One is shown above.",
-				n, max(1, im.Rows/max(1, n))))
+			notes = append(notes, fmt.Sprintf("%s added across the copy, about 1 in %s. No existing value is altered. One is shown above.",
+				countNoun(n, "synthetic row", "synthetic rows"), thousands(max(1, im.Rows/max(1, n)))))
+			if sc.DenseKey(master) {
+				notes = append(notes, fmt.Sprintf("%s has no gaps, so each canary takes a key past the highest one. Anyone sorting the copy by %s can spot them.", sc.Key, sc.Key))
+			}
 		} else {
 			notes = append(notes, "No synthetic rows could be built: the table has no column that identifies a row.")
 		}
@@ -238,26 +241,26 @@ func previewNotes(master *Table, sc Schema, tech Techniques, iss *Issuance, im P
 		case iss.Changed == 0:
 			notes = append(notes, "The tolerant columns hold no spare precision, so nothing was changed.")
 		default:
-			notes = append(notes, fmt.Sprintf("%d of %d cells changed (%.2f%%), at %s of %s. Largest change %s.",
-				im.CellsChanged, im.CellsTotal, im.CellsPercent, depthName(par.LowBitDepth), tolerantList(sc), im.LargestShift))
+			notes = append(notes, fmt.Sprintf("%s of %s cells changed (%.2f%%), at %s of %s. Largest change %s.",
+				thousands(im.CellsChanged), thousands(im.CellsTotal), im.CellsPercent, depthName(par.LowBitDepth), tolerantList(sc), im.LargestShift))
 		}
 	}
 	if tech.Allocate {
-		notes = append(notes, fmt.Sprintf("%d rows withheld from this copy, about 1 in %d. Every remaining value is untouched, but the copy is no longer complete, which a licence promising the full set may not allow.",
-			im.RowsWithheld, par.AllocRate)+withheldShownNote(im))
+		notes = append(notes, fmt.Sprintf("%s withheld from this copy, about 1 in %s. Every remaining value is untouched, but the copy is no longer complete, which a licence promising the full set may not allow.",
+			countNoun(im.RowsWithheld, "row", "rows"), thousands(par.AllocRate))+withheldShownNote(im))
 	}
 	if tech.Order {
 		if im.PairsSwapped == 0 {
 			notes = append(notes, "No pairs were reordered.")
 		} else {
-			notes = append(notes, fmt.Sprintf("%d adjacent pairs reordered. No value, row or column differs from the source, only the sequence. Lost the moment anyone sorts the file.", im.PairsSwapped))
+			notes = append(notes, fmt.Sprintf("%s reordered. No value, row or column differs from the source, only the sequence. Lost the moment anyone sorts the file.", countNoun(im.PairsSwapped, "adjacent pair", "adjacent pairs")))
 		}
 	}
 	if tech.Format {
 		if im.CellsReformat == 0 {
 			notes = append(notes, "No cell could be rewritten: the table has no decimal values to pad.")
 		} else {
-			notes = append(notes, fmt.Sprintf("%d cells rewritten with one more decimal place. The numbers are identical, only their spelling differs. Lost as soon as any tool parses and re-saves the file.", im.CellsReformat))
+			notes = append(notes, fmt.Sprintf("%s rewritten with one more decimal place. The numbers are identical, only their spelling differs. Lost as soon as any tool parses and re-saves the file.", countNoun(im.CellsReformat, "cell", "cells")))
 		}
 	}
 	if tech.Noise {
@@ -265,17 +268,17 @@ func previewNotes(master *Table, sc Schema, tech Techniques, iss *Issuance, im P
 		case len(sc.Tolerant) == 0:
 			notes = append(notes, "No column is marked tolerant, so there is no noise to carry a mark.")
 		default:
-			notes = append(notes, fmt.Sprintf("%d cells carry the mark in a perturbation of up to %d units of their last declared digit, in %s. A recipient never sees the unperturbed values, so this reads the same as an unmarked release. That holds only where it replaces the pipeline's own noise step; run after it, the two perturbations compound.",
-				iss.Noised, par.NoiseSpan, tolerantList(sc)))
+			notes = append(notes, fmt.Sprintf("%s carry the mark in a perturbation of up to %d units of their last declared digit, in %s. A recipient never sees the unperturbed values, so this reads the same as an unmarked release. That holds only where it replaces the pipeline's own noise step; run after it, the two perturbations compound.",
+				countNoun(iss.Noised, "cell", "cells"), par.NoiseSpan, tolerantList(sc)))
 		}
 	}
 	if tech.Redact {
 		names := sc.redactable(master)
 		if len(names) == 0 {
-			notes = append(notes, "No column reads as personal text, so there is nothing to redact.")
+			notes = append(notes, "No column is set to be redacted, so nothing was replaced. Set a column's role to redact in the table header.")
 		} else {
-			notes = append(notes, fmt.Sprintf("%d values in %s replaced by a keyed pseudonym. Free only if you are redacting these columns anyway. The pseudonym differs per recipient, so two recipients comparing copies can see which column carries the mark and can strip it by renumbering, and neither can link a person across copies. Do not reuse the re-identification key for this.",
-				im.CellsRedacted, strings.Join(names, " and ")))
+			notes = append(notes, fmt.Sprintf("%s in %s replaced by a keyed pseudonym. Free only if you are redacting these columns anyway. The pseudonym differs per recipient, so two recipients comparing copies can see which column carries the mark and can strip it by renumbering, and neither can link a person across copies. Do not reuse the re-identification key for this.",
+				countNoun(im.CellsRedacted, "value", "values"), joinAnd(names)))
 		}
 	}
 	if tech.Dummy {
@@ -289,6 +292,79 @@ func previewNotes(master *Table, sc Schema, tech Techniques, iss *Issuance, im P
 		notes = append(notes, "No measure selected. The copy is identical to the source, and only exact matching against the source could identify it.")
 	}
 	return notes
+}
+
+// thousands writes n with a comma between each group of three digits.
+func thousands(n int) string {
+	s := strconv.Itoa(n)
+	neg := strings.HasPrefix(s, "-")
+	s = strings.TrimPrefix(s, "-")
+	for i := len(s) - 3; i > 0; i -= 3 {
+		s = s[:i] + "," + s[i:]
+	}
+	if neg {
+		return "-" + s
+	}
+	return s
+}
+
+// sayf is fmt.Sprintf for sentences a person reads: every %d is written
+// with thousands separators, so counts read the same everywhere.
+func sayf(format string, args ...any) string {
+	var b strings.Builder
+	argi := 0
+	for i := 0; i < len(format); i++ {
+		if format[i] != '%' || i+1 >= len(format) {
+			b.WriteByte(format[i])
+			continue
+		}
+		j := i + 1
+		for j < len(format) && strings.IndexByte("+-# 0123456789.", format[j]) >= 0 {
+			j++
+		}
+		if j >= len(format) {
+			b.WriteString(format[i:])
+			break
+		}
+		verb := format[i : j+1]
+		switch {
+		case verb == "%%":
+			b.WriteByte('%')
+		case verb == "%d" && argi < len(args):
+			if n, ok := args[argi].(int); ok {
+				b.WriteString(thousands(n))
+			} else {
+				fmt.Fprintf(&b, verb, args[argi])
+			}
+			argi++
+		case argi < len(args):
+			fmt.Fprintf(&b, verb, args[argi])
+			argi++
+		default:
+			b.WriteString(verb)
+		}
+		i = j
+	}
+	return b.String()
+}
+
+// countNoun renders a count with the matching noun: "1 row", "2,000 rows".
+func countNoun(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return thousands(n) + " " + many
+}
+
+// joinAnd lists names as "a", "a and b", "a, b and c".
+func joinAnd(names []string) string {
+	switch len(names) {
+	case 0:
+		return ""
+	case 1:
+		return names[0]
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
 }
 
 // withheldShownNote says so when the illustrated row came from further down.
@@ -341,6 +417,9 @@ func (s Schema) roleOf(name string) string {
 	}
 	if _, ok := s.tolerantField(name); ok {
 		return "tolerant"
+	}
+	if s.redacted(name) {
+		return "redact"
 	}
 	return ""
 }

@@ -147,27 +147,13 @@ func redactValue(key codec.Key, original string, id uint16) string {
 	return fmt.Sprintf("PSN-%04X-%02d", id^pad, chk)
 }
 
-// redactable lists columns that read as personal text: mostly non-numeric and
-// distinct enough to name someone. The column used to locate marks is left
-// alone, because replacing it would break every other carrier's addressing.
+// redactable lists the columns the data owner marked for redaction that are
+// present in t. The column used to locate marks is never among them, because
+// replacing it would break every other carrier's addressing.
 func (s Schema) redactable(t *Table) []string {
 	var out []string
-	if len(t.Rows) == 0 {
-		return out
-	}
-	for c, name := range t.Columns {
-		if name == s.Key || name == s.Dummy || s.tolerant(name) {
-			continue
-		}
-		seen := map[string]bool{}
-		text := 0
-		for _, row := range t.Rows {
-			seen[row[c]] = true
-			if _, err := strconv.ParseFloat(row[c], 64); err != nil && row[c] != "" {
-				text++
-			}
-		}
-		if text*2 >= len(t.Rows) && len(seen)*2 >= len(t.Rows) {
+	for _, name := range s.Redact {
+		if t.Col(name) >= 0 && name != s.Key && name != s.Dummy && !s.tolerant(name) {
 			out = append(out, name)
 		}
 	}
